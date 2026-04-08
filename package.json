@@ -1,0 +1,14 @@
+{
+  "name": "aj-bot",
+  "version": "1.0.0",
+  "description": "AJ — Personal AI business agent for Telegram",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
