@@ -1,7 +1,7 @@
 {
   "name": "aj-bot",
-  "version": "2.0.0",
-  "description": "AJ — Personal AI business agent with memory and task tracking",
+  "version": "3.0.0",
+  "description": "AJ — Managed Agent powered Telegram business assistant",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

@@ -9,6 +9,8 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const JOSH_CHAT_ID = process.env.JOSH_CHAT_ID;
+const AGENT_ID = process.env.AJ_AGENT_ID;
+const ENVIRONMENT_ID = process.env.AJ_ENVIRONMENT_ID;
 
 const app = express();
 app.use(express.json());
@@ -36,63 +38,17 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS conversations (
       id SERIAL PRIMARY KEY,
       chat_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS projects (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'active',
+      session_id TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
-  const { rows } = await pool.query("SELECT COUNT(*) FROM projects");
-  if (parseInt(rows[0].count) === 0) {
-    await pool.query(`
-      INSERT INTO projects (name, description) VALUES
-      ('Overflow Revive', 'Recovery system business'),
-      ('Coinbot Hunter', 'Solana memecoin tracking dashboard v16'),
-      ('RIGOR', 'Forensic rug-detection AI agent for X/Twitter'),
-      ('Lead Gen', 'B2B and ecommerce lead generation service')
-    `);
-  }
   console.log('Database ready');
-}
-
-async function getHistory(chatId) {
-  const { rows } = await pool.query(
-    `SELECT role, content FROM conversations 
-     WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 20`,
-    [chatId]
-  );
-  return rows.reverse();
-}
-
-async function saveMessage(chatId, role, content) {
-  await pool.query(
-    `INSERT INTO conversations (chat_id, role, content) VALUES ($1, $2, $3)`,
-    [chatId, role, content]
-  );
-  await pool.query(
-    `DELETE FROM conversations WHERE chat_id = $1 AND id NOT IN (
-      SELECT id FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 30
-    )`,
-    [chatId]
-  );
 }
 
 async function getTaskSummary() {
   const { rows } = await pool.query(`
-    SELECT t.*, p.name as project_name 
-    FROM tasks t
-    LEFT JOIN projects p ON t.project = p.name
-    WHERE t.status != 'done'
-    ORDER BY 
-      CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-      t.created_at ASC
+    SELECT * FROM tasks WHERE status != 'done'
+    ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at ASC
   `);
   return rows;
 }
@@ -100,86 +56,119 @@ async function getTaskSummary() {
 async function getTaskContext() {
   const tasks = await getTaskSummary();
   if (tasks.length === 0) return "No active tasks.";
-  
   const byProject = {};
   tasks.forEach(t => {
-    const proj = t.project || 'General';
-    if (!byProject[proj]) byProject[proj] = [];
-    byProject[proj].push(`[${t.status.toUpperCase()}] ${t.title}${t.priority === 'high' ? ' ⚡' : ''}`);
+    if (!byProject[t.project]) byProject[t.project] = [];
+    byProject[t.project].push(`[${t.status.toUpperCase()}] ${t.title}${t.priority === 'high' ? ' ⚡' : ''}`);
   });
-
   return Object.entries(byProject)
     .map(([proj, items]) => `${proj}:\n${items.map(i => `  • ${i}`).join('\n')}`)
     .join('\n\n');
 }
 
-const AJ_SYSTEM = `You are AJ, Josh's personal AI business agent and right-hand assistant. Sharp, direct, loyal. You know Josh's businesses inside and out.
+async function getOrCreateSession(chatId) {
+  const { rows } = await pool.query(
+    `SELECT session_id FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [chatId]
+  );
+  if (rows.length > 0 && rows[0].session_id) {
+    return rows[0].session_id;
+  }
+  return await createNewSession(chatId);
+}
 
-BUSINESS 1: OVERFLOW REVIVE
-A fully built AI-powered revenue recovery SaaS dashboard Josh sells to e-commerce and subscription businesses. Dark-themed professional UI. Powered by Claude API. Total revenue at risk tracked: $4,830.
+async function createNewSession(chatId) {
+  const session = await client.beta.sessions.create({
+    agent: { type: 'agent', id: AGENT_ID },
+    environment_id: ENVIRONMENT_ID,
+    betas: ['managed-agents-2026-04-01'],
+  });
+  await pool.query(
+    `INSERT INTO conversations (chat_id, session_id) VALUES ($1, $2)`,
+    [chatId, session.id]
+  );
+  return session.id;
+}
 
-5 CORE MODULES:
-1. Failed Payment Recovery - detects failed payments, generates personalized recovery emails + SMS. 7 failed payments = $1,540 at risk, 72hr window, 70% recovery rate with AI outreach. Key customers: James R. ($220 expired card), Sarah K. ($197 insufficient funds), Marcus T. ($299 expired), Ana L. ($99 expired), Ben W. ($400 disputed charge).
-2. Churn Watch - monitors real-time cancellation signals before customers cancel. 8 at-risk customers, $1,680 annual risk, 62% save rate with personal outreach, 3 urgent (48hr). Signals tracked: login drops, usage decline, no email opens, open tickets. At-risk: David P. ($297/mo, 18 days no login, Critical), Lisa M. ($197/mo, usage down 65%, Critical), Tom R. ($99/mo, open ticket, High), Jenny K. ($297/mo, login drop 40%, High), Marcus R. ($197/mo, no emails 3 weeks, Medium).
-3. Abandoned Cart Resurrection - finds abandoned carts, diagnoses exit reason per customer. 14 carts, avg $127, top exit = price (8 of 14), $890 recoverable, $534 expected with AI outreach.
-4. Upsell Engine - finds recent buyers with no upsell triggered. 31 buyers = $620 opportunity at 18% conversion. Peak intent window: 20 min post-purchase. Avg upsell value $197. AI builds 3-step sequence at 20min, Day 3, Day 14.
-5. Win-Back - lapsed customers 90+ days inactive. 44 lapsed = $1,100 potential at 14% reactivation. Avg past order $89. Best send window: Day 95. 3 segments: A (18 high-value one-time buyers), B (16 multi-buyers who stopped), C (10 subscription lapsed).
-
-HOW IT WORKS: Client enters their Anthropic API key + business data in setup modal. Dashboard auto-populates all metrics. Click Fix/Save/Recover buttons and Claude generates ready-to-use recovery emails, save messages, upsell sequences - copy and send instantly. Includes weekly AI report.
-HOW TO SELL IT: Target e-commerce stores, SaaS, subscription businesses, coaches/consultants. Pitch: You are losing money you have already earned - this finds it and fixes it in minutes. Pricing: $500-1,500 setup fee + $300-800/month retainer.
-
-BUSINESS 2: COINBOT HUNTER
-Solana memecoin tracking dashboard currently on v16. Most technically advanced project. Tracks new token launches, watchlists, and rug detection signals.
-
-BUSINESS 3: RIGOR
-Forensic rug-detection AI agent for X/Twitter. Noir detective persona. Posts Solana memecoin autopsy reports. Catchphrase: Rigor confirmed. In build phase. Feeds from Coinbot Hunter data pipeline.
-
-BUSINESS 4: LEAD GEN SERVICE
-AI-powered lead generation and marketing automation for B2B companies and e-commerce brands. Finds leads, enriches them, writes personalized outreach, runs auto follow-up sequences.
-
-YOUR ROLE AS AJ:
-- Talk like a sharp business partner, not a corporate assistant
-- Direct and concise, no fluff
-- Keep Telegram responses tight, short paragraphs
-- Use bullet points only when listing multiple items
-- Always end with one clear next action Josh should take
-- When Josh asks what to work on, prioritize what makes money fastest
-- You have access to Josh's live task list in every message - use it for contextual advice`;
-
-async function getAJResponse(chatId, userMessage) {
-  const history = await getHistory(chatId);
+async function askAJ(sessionId, message) {
   const taskContext = await getTaskContext();
+  const fullMessage = `${message}\n\n[Current task list:\n${taskContext}]`;
 
-  const systemWithTasks = `${AJ_SYSTEM}\n\nCURRENT TASK LIST:\n${taskContext}`;
+  let reply = '';
 
-  history.push({ role: 'user', content: userMessage });
+  try {
+    const stream = client.beta.sessions.events.stream(sessionId, {
+      betas: ['managed-agents-2026-04-01'],
+    });
 
-  const response = await client.messages.create({
-    model: 'claude-opus-4-5',
-    max_tokens: 1024,
-    system: systemWithTasks,
-    messages: history
+    await client.beta.sessions.events.send(sessionId, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: fullMessage }],
+      }],
+      betas: ['managed-agents-2026-04-01'],
+    });
+
+    for await (const event of await stream) {
+      if (event.type === 'agent.message') {
+        for (const block of event.content) {
+          if (block.text) reply += block.text;
+        }
+      }
+      if (event.type === 'session.status_idle') break;
+    }
+  } catch (err) {
+    console.error('Session error:', err.message);
+    // Session may have expired — create a new one
+    if (err.message?.includes('session') || err.status === 404) {
+      const newSessionId = await createNewSession('retry');
+      return await askAJFresh(newSessionId, message);
+    }
+    throw err;
+  }
+
+  return reply || "I'm thinking — try again in a second.";
+}
+
+async function askAJFresh(sessionId, message) {
+  const taskContext = await getTaskContext();
+  const fullMessage = `${message}\n\n[Current task list:\n${taskContext}]`;
+  let reply = '';
+
+  const stream = client.beta.sessions.events.stream(sessionId, {
+    betas: ['managed-agents-2026-04-01'],
   });
 
-  const reply = response.content[0].text;
-  await saveMessage(chatId, 'user', userMessage);
-  await saveMessage(chatId, 'assistant', reply);
-  return reply;
+  await client.beta.sessions.events.send(sessionId, {
+    events: [{
+      type: 'user.message',
+      content: [{ type: 'text', text: fullMessage }],
+    }],
+    betas: ['managed-agents-2026-04-01'],
+  });
+
+  for await (const event of await stream) {
+    if (event.type === 'agent.message') {
+      for (const block of event.content) {
+        if (block.text) reply += block.text;
+      }
+    }
+    if (event.type === 'session.status_idle') break;
+  }
+
+  return reply || "Got it — what else do you need?";
 }
 
 function formatTasks(tasks) {
   if (tasks.length === 0) return "No active tasks. Tell me what you're working on this week!";
-  
   const byProject = {};
   tasks.forEach(t => {
-    const proj = t.project || 'General';
-    if (!byProject[proj]) byProject[proj] = [];
-    byProject[proj].push(t);
+    if (!byProject[t.project]) byProject[t.project] = [];
+    byProject[t.project].push(t);
   });
-
   return Object.entries(byProject).map(([proj, items]) => {
     const lines = items.map(t => {
-      const priority = t.priority === 'high' ? '⚡' : t.priority === 'low' ? '▽' : '•';
+      const priority = t.priority === 'high' ? '⚡' : '•';
       const status = t.status === 'in_progress' ? '🔄' : '⏳';
       return `${status} ${priority} ${t.title}`;
     }).join('\n');
@@ -194,86 +183,68 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
   const chatId = update.message.chat.id.toString();
   const text = update.message.text;
+  const firstName = update.message.from.first_name || 'Josh';
 
   try {
     await bot.sendChatAction(chatId, 'typing');
 
     if (text === '/start') {
       await bot.sendMessage(chatId,
-        `AJ online. 🟢\n\nHey Josh — memory and task tracking are active. I'll brief you every morning at 8am.\n\nQuick commands:\n/tasks — see all active tasks\n/add — add a task\n/done — mark task complete\n/status — business overview\n/clear — reset memory\n\nWhat do you need?`,
+        `AJ online. 🟢\n\nHey ${firstName} — I'm now running on Anthropic's Managed Agent infrastructure. I can search the web, analyze data, and think deeper.\n\n• /tasks — active task list\n• /add [task] to [project] — add a task\n• /done [task] — mark complete\n• /status — business overview\n• /newsession — fresh start\n\nWhat do you need?`,
         { parse_mode: 'Markdown' }
       );
       return;
     }
 
-    if (text === '/tasks' || text === '/showtasks') {
+    if (text === '/tasks') {
       const tasks = await getTaskSummary();
-      const msg = formatTasks(tasks);
-      await bot.sendMessage(chatId, `*Your Active Tasks*\n\n${msg}`, { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, `*Your Active Tasks*\n\n${formatTasks(tasks)}`, { parse_mode: 'Markdown' });
       return;
     }
 
-    if (text.startsWith('/add ') || text.startsWith('/addtask ')) {
-      const taskText = text.replace('/add ', '').replace('/addtask ', '');
+    if (text.startsWith('/add ')) {
+      const taskText = text.replace('/add ', '');
       const parts = taskText.split(' to ');
       const title = parts[0].trim();
       const project = parts[1] ? parts[1].trim() : 'General';
-      await pool.query(
-        `INSERT INTO tasks (title, project) VALUES ($1, $2)`,
-        [title, project]
-      );
+      await pool.query(`INSERT INTO tasks (title, project) VALUES ($1, $2)`, [title, project]);
       await bot.sendMessage(chatId, `✅ Added: *${title}*\nProject: ${project}`, { parse_mode: 'Markdown' });
       return;
     }
 
-    if (text.startsWith('/done ') || text.startsWith('/complete ')) {
-      const search = text.replace('/done ', '').replace('/complete ', '').trim();
+    if (text.startsWith('/done ')) {
+      const search = text.replace('/done ', '').trim();
       const { rows } = await pool.query(
-        `UPDATE tasks SET status = 'done', updated_at = NOW() 
-         WHERE LOWER(title) LIKE LOWER($1) AND status != 'done'
-         RETURNING title`,
+        `UPDATE tasks SET status = 'done', updated_at = NOW() WHERE LOWER(title) LIKE LOWER($1) AND status != 'done' RETURNING title`,
         [`%${search}%`]
       );
       if (rows.length > 0) {
-        await bot.sendMessage(chatId, `🎯 Marked done: *${rows[0].title}*\nLet's keep the momentum.`, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, `🎯 Done: *${rows[0].title}*`, { parse_mode: 'Markdown' });
       } else {
         await bot.sendMessage(chatId, `Couldn't find that task. Try /tasks to see what's active.`);
       }
       return;
     }
 
-    if (text.startsWith('/high ')) {
-      const search = text.replace('/high ', '').trim();
-      const { rows } = await pool.query(
-        `UPDATE tasks SET priority = 'high', updated_at = NOW()
-         WHERE LOWER(title) LIKE LOWER($1) RETURNING title`,
-        [`%${search}%`]
-      );
-      if (rows.length > 0) {
-        await bot.sendMessage(chatId, `⚡ Priority set to HIGH: *${rows[0].title}*`, { parse_mode: 'Markdown' });
-      }
+    if (text === '/newsession') {
+      await pool.query(`DELETE FROM conversations WHERE chat_id = $1`, [chatId]);
+      await createNewSession(chatId);
+      await bot.sendMessage(chatId, 'Fresh session started. AJ is ready.');
       return;
     }
 
     if (text === '/status') {
       const tasks = await getTaskSummary();
-      const pending = tasks.filter(t => t.status === 'pending').length;
-      const inProgress = tasks.filter(t => t.status === 'in_progress').length;
       const high = tasks.filter(t => t.priority === 'high').length;
       await bot.sendMessage(chatId,
-        `*Business Status*\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready\n\n*Tasks*\n• ${pending} pending\n• ${inProgress} in progress\n• ${high} high priority\n\nWhat do you want to tackle?`,
+        `*Business Status*\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready\n\n*Tasks*\n• ${tasks.length} active · ${high} high priority`,
         { parse_mode: 'Markdown' }
       );
       return;
     }
 
-    if (text === '/clear') {
-      await pool.query(`DELETE FROM conversations WHERE chat_id = $1`, [chatId]);
-      await bot.sendMessage(chatId, 'Memory cleared. Fresh start — what do you need?');
-      return;
-    }
-
-    const reply = await getAJResponse(chatId, text);
+    const sessionId = await getOrCreateSession(chatId);
+    const reply = await askAJ(sessionId, text);
     await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
 
   } catch (err) {
@@ -285,26 +256,15 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 async function sendMorningBriefing() {
   if (!JOSH_CHAT_ID) return;
   try {
+    const sessionId = await createNewSession('morning-briefing');
     const tasks = await getTaskSummary();
     const high = tasks.filter(t => t.priority === 'high');
-    const pending = tasks.filter(t => t.status === 'pending');
-    
-    let msg = `☀️ *Morning Briefing*\n\n`;
-    
+    let prompt = `Morning briefing time. Give Josh a sharp, concise Wednesday morning briefing covering: 1) What to focus on today across all 4 businesses to make the most money 2) Any market intel worth knowing 3) One clear action to take before noon.`;
     if (high.length > 0) {
-      msg += `*High Priority Today:*\n`;
-      high.forEach(t => { msg += `⚡ ${t.title} (${t.project})\n`; });
-      msg += '\n';
+      prompt += ` High priority tasks: ${high.map(t => t.title).join(', ')}.`;
     }
-    
-    msg += `*On Deck (${pending.length} tasks):*\n`;
-    pending.slice(0, 5).forEach(t => { msg += `• ${t.title} — ${t.project}\n`; });
-    
-    if (pending.length > 5) msg += `...and ${pending.length - 5} more\n`;
-    
-    msg += `\nWhat are we knocking out first today?`;
-    
-    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
+    const reply = await askAJFresh(sessionId, prompt);
+    await bot.sendMessage(JOSH_CHAT_ID, `☀️ *Morning Briefing*\n\n${reply}`, { parse_mode: 'Markdown' });
   } catch (err) {
     console.error('Morning briefing error:', err);
   }
@@ -314,8 +274,10 @@ async function sendEveningCheckIn() {
   if (!JOSH_CHAT_ID) return;
   try {
     const tasks = await getTaskSummary();
-    const msg = `🌙 *Evening Check-in*\n\nYou've got ${tasks.length} active tasks across your businesses.\n\nAnything you knocked out today that needs to be marked done? Just reply /done [task name]`;
-    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
+    await bot.sendMessage(JOSH_CHAT_ID,
+      `🌙 *Evening Check-in*\n\nYou've got ${tasks.length} active tasks. Anything to mark done today? Reply /done [task name]`,
+      { parse_mode: 'Markdown' }
+    );
   } catch (err) {
     console.error('Evening check-in error:', err);
   }
@@ -324,14 +286,13 @@ async function sendEveningCheckIn() {
 cron.schedule('0 8 * * *', sendMorningBriefing, { timezone: 'America/Chicago' });
 cron.schedule('0 20 * * *', sendEveningCheckIn, { timezone: 'America/Chicago' });
 
-app.get('/', (req, res) => res.send('AJ v2 is online.'));
+app.get('/', (req, res) => res.send('AJ v3 — Managed Agent — Online'));
 
 app.listen(PORT, async () => {
   await initDB();
-  console.log(`AJ v2 running on port ${PORT}`);
+  console.log(`AJ v3 running on port ${PORT}`);
   if (WEBHOOK_URL) {
-    const webhookEndpoint = `${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`;
-    await bot.setWebHook(webhookEndpoint);
-    console.log(`Webhook set: ${webhookEndpoint}`);
+    await bot.setWebHook(`${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`);
+    console.log(`Webhook set`);
   }
 });
