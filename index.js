@@ -42,6 +42,7 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await pool.query('ALTER TABLE conversations ADD COLUMN IF NOT EXISTS session_id TEXT').catch(() => {});
   console.log('Database ready');
 }
 
