@@ -1,11 +1,14 @@
 const TelegramBot = require('node-telegram-bot-api');
 const Anthropic = require('@anthropic-ai/sdk');
 const express = require('express');
+const { Pool } = require('pg');
+const cron = require('node-cron');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const JOSH_CHAT_ID = process.env.JOSH_CHAT_ID;
 
 const app = express();
 app.use(express.json());
@@ -13,59 +16,161 @@ app.use(express.json());
 const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 const bot = new TelegramBot(TELEGRAM_TOKEN);
 
-const conversationHistory = {};
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-const AJ_SYSTEM_PROMPT = `You are AJ, Josh's personal AI business agent and right-hand assistant. You are sharp, direct, loyal, and genuinely invested in Josh's success.
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      project TEXT DEFAULT 'General',
+      status TEXT DEFAULT 'pending',
+      due_date TEXT,
+      priority TEXT DEFAULT 'medium',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS conversations (
+      id SERIAL PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS projects (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
 
-You have deep knowledge of Josh's three businesses:
-
-1. OVERFLOW REVIVE — A recovery system business. Help Josh manage, grow, and optimize it.
-2. COINBOT HUNTER — A Solana memecoin tracking dashboard (currently v16). The most advanced of the three projects.
-3. RIGOR — A forensic rug-detection AI agent for X/Twitter. Noir detective persona. Catchphrase: "Rigor confirmed." 🪦 Posts Solana memecoin autopsy reports. Still in planning/build phase.
-
-Josh is also building a lead generation and marketing automation service targeting B2B companies and e-commerce brands.
-
-Your personality:
-- Talk like a smart business partner, not a corporate assistant
-- Be direct and concise — no fluff, no filler
-- Give actionable advice, not vague suggestions  
-- You know Josh's businesses better than anyone
-- Occasionally sharp and witty, always on his side
-- Keep responses tight for Telegram — use short paragraphs, not walls of text
-- Use bullet points sparingly, only when listing multiple items
-- Always end with one clear next action Josh should take
-
-When Josh asks what to work on, prioritize based on what will make money or unblock progress fastest.`;
-
-async function getAJResponse(chatId, userMessage) {
-  if (!conversationHistory[chatId]) {
-    conversationHistory[chatId] = [];
+  const { rows } = await pool.query("SELECT COUNT(*) FROM projects");
+  if (parseInt(rows[0].count) === 0) {
+    await pool.query(`
+      INSERT INTO projects (name, description) VALUES
+      ('Overflow Revive', 'Recovery system business'),
+      ('Coinbot Hunter', 'Solana memecoin tracking dashboard v16'),
+      ('RIGOR', 'Forensic rug-detection AI agent for X/Twitter'),
+      ('Lead Gen', 'B2B and ecommerce lead generation service')
+    `);
   }
+  console.log('Database ready');
+}
 
-  conversationHistory[chatId].push({
-    role: 'user',
-    content: userMessage
+async function getHistory(chatId) {
+  const { rows } = await pool.query(
+    `SELECT role, content FROM conversations 
+     WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 20`,
+    [chatId]
+  );
+  return rows.reverse();
+}
+
+async function saveMessage(chatId, role, content) {
+  await pool.query(
+    `INSERT INTO conversations (chat_id, role, content) VALUES ($1, $2, $3)`,
+    [chatId, role, content]
+  );
+  await pool.query(
+    `DELETE FROM conversations WHERE chat_id = $1 AND id NOT IN (
+      SELECT id FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 30
+    )`,
+    [chatId]
+  );
+}
+
+async function getTaskSummary() {
+  const { rows } = await pool.query(`
+    SELECT t.*, p.name as project_name 
+    FROM tasks t
+    LEFT JOIN projects p ON t.project = p.name
+    WHERE t.status != 'done'
+    ORDER BY 
+      CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+      t.created_at ASC
+  `);
+  return rows;
+}
+
+async function getTaskContext() {
+  const tasks = await getTaskSummary();
+  if (tasks.length === 0) return "No active tasks.";
+  
+  const byProject = {};
+  tasks.forEach(t => {
+    const proj = t.project || 'General';
+    if (!byProject[proj]) byProject[proj] = [];
+    byProject[proj].push(`[${t.status.toUpperCase()}] ${t.title}${t.priority === 'high' ? ' ⚡' : ''}`);
   });
 
-  if (conversationHistory[chatId].length > 20) {
-    conversationHistory[chatId] = conversationHistory[chatId].slice(-20);
-  }
+  return Object.entries(byProject)
+    .map(([proj, items]) => `${proj}:\n${items.map(i => `  • ${i}`).join('\n')}`)
+    .join('\n\n');
+}
+
+const AJ_SYSTEM = `You are AJ, Josh's personal AI business agent and right-hand assistant. Sharp, direct, loyal.
+
+Josh's businesses:
+1. OVERFLOW REVIVE — Recovery system business
+2. COINBOT HUNTER — Solana memecoin tracking dashboard (v16)  
+3. RIGOR — Forensic rug-detection AI agent for X/Twitter. Noir persona. "Rigor confirmed." 🪦
+4. LEAD GEN — B2B and ecommerce lead generation service
+
+TASK MANAGEMENT COMMANDS you understand and execute:
+- When Josh says "add task [title] to [project]" → respond with /addtask command
+- When Josh says "mark [task] done" or "complete [task]" → respond with /donetask
+- When Josh says "show tasks" or "what's on my list" → respond with /showtasks
+- When Josh says "set priority high on [task]" → respond with /prioritytask
+
+You have access to Josh's current task list in every message. Use it to give contextual advice.
+
+Personality: Talk like a smart business partner. Direct, no fluff. Keep Telegram responses tight.
+Always end with one clear next action.`;
+
+async function getAJResponse(chatId, userMessage) {
+  const history = await getHistory(chatId);
+  const taskContext = await getTaskContext();
+
+  const systemWithTasks = `${AJ_SYSTEM}\n\nCURRENT TASK LIST:\n${taskContext}`;
+
+  history.push({ role: 'user', content: userMessage });
 
   const response = await client.messages.create({
     model: 'claude-opus-4-5',
     max_tokens: 1024,
-    system: AJ_SYSTEM_PROMPT,
-    messages: conversationHistory[chatId]
+    system: systemWithTasks,
+    messages: history
   });
 
   const reply = response.content[0].text;
+  await saveMessage(chatId, 'user', userMessage);
+  await saveMessage(chatId, 'assistant', reply);
+  return reply;
+}
 
-  conversationHistory[chatId].push({
-    role: 'assistant',
-    content: reply
+function formatTasks(tasks) {
+  if (tasks.length === 0) return "No active tasks. Tell me what you're working on this week!";
+  
+  const byProject = {};
+  tasks.forEach(t => {
+    const proj = t.project || 'General';
+    if (!byProject[proj]) byProject[proj] = [];
+    byProject[proj].push(t);
   });
 
-  return reply;
+  return Object.entries(byProject).map(([proj, items]) => {
+    const lines = items.map(t => {
+      const priority = t.priority === 'high' ? '⚡' : t.priority === 'low' ? '▽' : '•';
+      const status = t.status === 'in_progress' ? '🔄' : '⏳';
+      return `${status} ${priority} ${t.title}`;
+    }).join('\n');
+    return `*${proj}*\n${lines}`;
+  }).join('\n\n');
 }
 
 app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
@@ -73,36 +178,88 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   const update = req.body;
   if (!update.message || !update.message.text) return;
 
-  const chatId = update.message.chat.id;
-  const userMessage = update.message.text;
-  const firstName = update.message.from.first_name || 'Josh';
+  const chatId = update.message.chat.id.toString();
+  const text = update.message.text;
 
   try {
     await bot.sendChatAction(chatId, 'typing');
 
-    if (userMessage === '/start') {
+    if (text === '/start') {
       await bot.sendMessage(chatId,
-        `AJ online. 🟢\n\nHey ${firstName} — I'm watching all three businesses. What do you need?`,
+        `AJ online. 🟢\n\nHey Josh — memory and task tracking are active. I'll brief you every morning at 8am.\n\nQuick commands:\n/tasks — see all active tasks\n/add — add a task\n/done — mark task complete\n/status — business overview\n/clear — reset memory\n\nWhat do you need?`,
         { parse_mode: 'Markdown' }
       );
       return;
     }
 
-    if (userMessage === '/status') {
+    if (text === '/tasks' || text === '/showtasks') {
+      const tasks = await getTaskSummary();
+      const msg = formatTasks(tasks);
+      await bot.sendMessage(chatId, `*Your Active Tasks*\n\n${msg}`, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (text.startsWith('/add ') || text.startsWith('/addtask ')) {
+      const taskText = text.replace('/add ', '').replace('/addtask ', '');
+      const parts = taskText.split(' to ');
+      const title = parts[0].trim();
+      const project = parts[1] ? parts[1].trim() : 'General';
+      await pool.query(
+        `INSERT INTO tasks (title, project) VALUES ($1, $2)`,
+        [title, project]
+      );
+      await bot.sendMessage(chatId, `✅ Added: *${title}*\nProject: ${project}`, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (text.startsWith('/done ') || text.startsWith('/complete ')) {
+      const search = text.replace('/done ', '').replace('/complete ', '').trim();
+      const { rows } = await pool.query(
+        `UPDATE tasks SET status = 'done', updated_at = NOW() 
+         WHERE LOWER(title) LIKE LOWER($1) AND status != 'done'
+         RETURNING title`,
+        [`%${search}%`]
+      );
+      if (rows.length > 0) {
+        await bot.sendMessage(chatId, `🎯 Marked done: *${rows[0].title}*\nLet's keep the momentum.`, { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(chatId, `Couldn't find that task. Try /tasks to see what's active.`);
+      }
+      return;
+    }
+
+    if (text.startsWith('/high ')) {
+      const search = text.replace('/high ', '').trim();
+      const { rows } = await pool.query(
+        `UPDATE tasks SET priority = 'high', updated_at = NOW()
+         WHERE LOWER(title) LIKE LOWER($1) RETURNING title`,
+        [`%${search}%`]
+      );
+      if (rows.length > 0) {
+        await bot.sendMessage(chatId, `⚡ Priority set to HIGH: *${rows[0].title}*`, { parse_mode: 'Markdown' });
+      }
+      return;
+    }
+
+    if (text === '/status') {
+      const tasks = await getTaskSummary();
+      const pending = tasks.filter(t => t.status === 'pending').length;
+      const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+      const high = tasks.filter(t => t.priority === 'high').length;
       await bot.sendMessage(chatId,
-        `*Business Status*\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready to activate\n\nWhat do you want to dig into?`,
+        `*Business Status*\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready\n\n*Tasks*\n• ${pending} pending\n• ${inProgress} in progress\n• ${high} high priority\n\nWhat do you want to tackle?`,
         { parse_mode: 'Markdown' }
       );
       return;
     }
 
-    if (userMessage === '/clear') {
-      conversationHistory[chatId] = [];
+    if (text === '/clear') {
+      await pool.query(`DELETE FROM conversations WHERE chat_id = $1`, [chatId]);
       await bot.sendMessage(chatId, 'Memory cleared. Fresh start — what do you need?');
       return;
     }
 
-    const reply = await getAJResponse(chatId, userMessage);
+    const reply = await getAJResponse(chatId, text);
     await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
 
   } catch (err) {
@@ -111,10 +268,53 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.send('AJ is online.'));
+async function sendMorningBriefing() {
+  if (!JOSH_CHAT_ID) return;
+  try {
+    const tasks = await getTaskSummary();
+    const high = tasks.filter(t => t.priority === 'high');
+    const pending = tasks.filter(t => t.status === 'pending');
+    
+    let msg = `☀️ *Morning Briefing*\n\n`;
+    
+    if (high.length > 0) {
+      msg += `*High Priority Today:*\n`;
+      high.forEach(t => { msg += `⚡ ${t.title} (${t.project})\n`; });
+      msg += '\n';
+    }
+    
+    msg += `*On Deck (${pending.length} tasks):*\n`;
+    pending.slice(0, 5).forEach(t => { msg += `• ${t.title} — ${t.project}\n`; });
+    
+    if (pending.length > 5) msg += `...and ${pending.length - 5} more\n`;
+    
+    msg += `\nWhat are we knocking out first today?`;
+    
+    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Morning briefing error:', err);
+  }
+}
+
+async function sendEveningCheckIn() {
+  if (!JOSH_CHAT_ID) return;
+  try {
+    const tasks = await getTaskSummary();
+    const msg = `🌙 *Evening Check-in*\n\nYou've got ${tasks.length} active tasks across your businesses.\n\nAnything you knocked out today that needs to be marked done? Just reply /done [task name]`;
+    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Evening check-in error:', err);
+  }
+}
+
+cron.schedule('0 8 * * *', sendMorningBriefing, { timezone: 'America/Chicago' });
+cron.schedule('0 20 * * *', sendEveningCheckIn, { timezone: 'America/Chicago' });
+
+app.get('/', (req, res) => res.send('AJ v2 is online.'));
 
 app.listen(PORT, async () => {
-  console.log(`AJ running on port ${PORT}`);
+  await initDB();
+  console.log(`AJ v2 running on port ${PORT}`);
   if (WEBHOOK_URL) {
     const webhookEndpoint = `${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`;
     await bot.setWebHook(webhookEndpoint);
