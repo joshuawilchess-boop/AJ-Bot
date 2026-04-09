@@ -1,7 +1,7 @@
 {
   "name": "aj-bot",
-  "version": "3.0.0",
-  "description": "AJ — Managed Agent powered Telegram business assistant",
+  "version": "4.0.0",
+  "description": "AJ — Autonomous AI agent with web search, memory, and proactive tasks",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
