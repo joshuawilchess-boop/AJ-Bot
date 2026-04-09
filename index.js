@@ -98,7 +98,9 @@ async function webSearch(query) {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          const results = parsed.web?.results?.slice(0, 4) || [];
+          const results = parsed.web?.results || parsed.results || [];
+          if (parsed.error) { resolve("Search API error: " + JSON.stringify(parsed.error)); return; }
+          console.log("Brave returned:", results.length, "results");
           const summary = results.map(r => `• ${r.title}: ${r.description}`).join('\n');
           resolve(summary || 'No results found.');
         } catch {
