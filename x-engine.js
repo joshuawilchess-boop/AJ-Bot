@@ -188,7 +188,7 @@ async function postToX(content, replyToId = null) {
     console.log('Posted to X:', content.substring(0, 60) + '...');
     return tweetId;
   } catch (err) {
-    console.error('X post error:', err.message);
+    console.error('X post error full:', JSON.stringify(err.data || err.message));
     return null;
   }
 }

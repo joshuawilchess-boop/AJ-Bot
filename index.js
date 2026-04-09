@@ -282,7 +282,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       if (tweetId) {
         await bot.sendMessage(chatId, 'Posted! https://x.com/AJ_agentic/status/' + tweetId);
       } else {
-        await bot.sendMessage(chatId, 'Blocked by privacy filter or X error.');
+        await bot.sendMessage(chatId, 'X error — check Railway logs for details. Make sure X_API_KEY vars are set and app has Read+Write permissions.');
       }
       return;
     }
