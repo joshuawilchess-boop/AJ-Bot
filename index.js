@@ -195,6 +195,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
   const chatId = update.message.chat.id.toString();
   const text = update.message.text;
+  const textLower = text.toLowerCase();
 
   try {
     await bot.sendChatAction(chatId, 'typing');
