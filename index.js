@@ -1,4 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
+const xEngine = require('./x-engine');
 const Anthropic = require('@anthropic-ai/sdk');
 const express = require('express');
 const { Pool } = require('pg');
@@ -382,7 +383,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     if (text === '/start') {
       await bot.sendMessage(chatId,
-        `AJ online. 🟢\n\nHey ${firstName} — I'm fully upgraded. Web search, long-term memory, autonomous task management.\n\n• /tasks — your task list\n• /add [task] to [project] — add task\n• /done [task] — mark complete\n• /memory — what I remember\n• /research [topic] — I'll search and report back\n• /status — business overview\n• /clear — reset conversation\n\nJust talk to me naturally — I'll search, remember, and act.`,
+        `AJ online. 🟢\n\nHey ${firstName} — I'm fully upgraded. Web search, long-term memory, autonomous task management.\n\n• /tasks — your task list\n• /add [task] to [project] — add task\n• /done [task] — mark complete\n• /memory — what I remember\n• /research [topic] — I'll search and report back\n• /status — business overview\n• /clear — reset conversation\n\n*X Controls:*\n• /xpost [text] — post to @AJ_agentic\n• /xdelete — delete last post\n• /xthread [topic] — post a thread\n• /xlast — see last 5 posts\n• /xpause / /xresume — pause auto-posting\n\nJust talk to me naturally — I'll search, remember, and act.`,
         { parse_mode: 'Markdown' }
       );
       return;
@@ -463,6 +464,78 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+
+    if (text.startsWith('/xpost ')) {
+      const postText = text.replace('/xpost ', '').trim();
+      await bot.sendMessage(chatId, '📤 Posting to X...');
+      const tweetId = await xEngine.postToX(postText);
+      if (tweetId) {
+        await bot.sendMessage(chatId, '✅ Posted to @AJ_agentic!
+https://x.com/AJ_agentic/status/' + tweetId);
+      } else {
+        await bot.sendMessage(chatId, '❌ Post blocked — hit the privacy filter or X error. Check the content.');
+      }
+      return;
+    }
+
+    if (text === '/xdelete' || text.startsWith('/xdelete ')) {
+      const { rows } = await pool.query('SELECT tweet_id, content FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 1');
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No recent posts found.'); return; }
+      const { tweet_id, content: postContent } = rows[0];
+      await bot.sendMessage(chatId, '🗑 Confirm delete this post?
+
+ + postContent.substring(0, 100) + ...
+
+Reply /xconfirmdelete ' + tweet_id);
+      return;
+    }
+
+    if (text.startsWith('/xconfirmdelete ')) {
+      const tweetId = text.replace('/xconfirmdelete ', '').trim();
+      try {
+        const { TwitterApi } = require('twitter-api-v2');
+        const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
+        await tw.v2.deleteTweet(tweetId);
+        await pool.query('UPDATE x_posts SET tweet_id = NULL WHERE tweet_id = $1', [tweetId]);
+        await bot.sendMessage(chatId, '🗑 Deleted from X.');
+      } catch(e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
+      return;
+    }
+
+    if (text.startsWith('/xthread ')) {
+      const topic = text.replace('/xthread ', '').trim();
+      await bot.sendMessage(chatId, '🧵 Researching and writing thread about: ' + topic + '...');
+      const searchResults = await webSearch(topic);
+      const tweets = await xEngine.generateThread(topic, searchResults);
+      await xEngine.postThread(tweets);
+      await bot.sendMessage(chatId, '✅ Thread posted to @AJ_agentic!');
+      return;
+    }
+
+    if (text === '/xpause') {
+      process.env.X_PAUSED = 'true';
+      await bot.sendMessage(chatId, '⏸ X auto-posting paused. I'll stop scheduled posts until you say /xresume.');
+      return;
+    }
+
+    if (text === '/xresume') {
+      process.env.X_PAUSED = '';
+      await bot.sendMessage(chatId, '▶️ X auto-posting resumed.');
+      return;
+    }
+
+    if (text === '/xlast') {
+      const { rows } = await pool.query('SELECT content, posted_at FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 5');
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No posts yet.'); return; }
+      const msg = rows.map((r, i) => (i+1) + '. ' + r.content.substring(0, 80) + '...').join('
+
+');
+      await bot.sendMessage(chatId, '*Last 5 X Posts:*
+
+' + msg, { parse_mode: 'Markdown' });
+      return;
+    }
+
     const reply = await getAJResponse(chatId, text);
     await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
 
@@ -525,6 +598,10 @@ app.get('/', (req, res) => res.send('AJ v4 — Autonomous Agent — Online'));
 
 app.listen(PORT, async () => {
   await initDB();
+  if (process.env.X_API_KEY) {
+    await xEngine.initXDB();
+    console.log('X engine ready — @AJ_agentic');
+  }
   console.log(`AJ v4 running on port ${PORT}`);
   if (WEBHOOK_URL) {
     await bot.setWebHook(`${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`);
