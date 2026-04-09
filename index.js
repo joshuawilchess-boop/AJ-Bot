@@ -275,8 +275,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
 
-    if (text.startsWith('/xpost ')) {
-      const postText = text.replace('/xpost ', '').trim();
+    if (textLower.startsWith('/xpost ')) {
+      const postText = text.replace(/\/xpost /i, '').trim();
       await bot.sendMessage(chatId, 'Posting to X...');
       const tweetId = await xEngine.postToX(postText);
       if (tweetId) {
@@ -287,15 +287,15 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    if (text === '/xdelete') {
+    if (textLower === '/xdelete') {
       const { rows } = await pool.query('SELECT tweet_id, content FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 1');
       if (rows.length === 0) { await bot.sendMessage(chatId, 'No recent posts found.'); return; }
       await bot.sendMessage(chatId, 'Reply /xconfirmdelete ' + rows[0].tweet_id + ' to delete: ' + rows[0].content.substring(0, 60));
       return;
     }
 
-    if (text.startsWith('/xconfirmdelete ')) {
-      const tweetId = text.replace('/xconfirmdelete ', '').trim();
+    if (textLower.startsWith('/xconfirmdelete ')) {
+      const tweetId = text.replace(/\/xconfirmdelete /i, '').trim();
       try {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
@@ -306,8 +306,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    if (text.startsWith('/xthread ')) {
-      const topic = text.replace('/xthread ', '').trim();
+    if (textLower.startsWith('/xthread ')) {
+      const topic = text.replace(/\/xthread /i, '').trim();
       await bot.sendMessage(chatId, 'Writing thread about: ' + topic + '...');
       const searchResults = await webSearch(topic);
       const tweets = await xEngine.generateThread(topic, searchResults);
@@ -316,23 +316,23 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    if (text === '/xpause') {
+    if (textLower === '/xpause') {
       process.env.X_PAUSED = 'true';
       await bot.sendMessage(chatId, 'X auto-posting paused. Say /xresume to turn back on.');
       return;
     }
 
-    if (text === '/xresume') {
+    if (textLower === '/xresume') {
       process.env.X_PAUSED = '';
       await bot.sendMessage(chatId, 'X auto-posting resumed.');
       return;
     }
 
-    if (text === '/xlast') {
-      const xRows = await pool.query('SELECT content, posted_at FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 5').catch(() => ({ rows: [] }));
-      if (xRows.rows.length === 0) { await bot.sendMessage(chatId, 'No X posts yet.'); return; }
-      const msg = xRows.rows.map((r, i) => (i+1) + '. ' + r.content.substring(0, 80)).join('\n\n');
-      await bot.sendMessage(chatId, 'Last 5 X Posts:\n\n' + msg);
+    if (textLower === '/xlast') {
+      const xRows = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 5').catch(() => ({ rows: [] }));
+      if (xRows.rows.length === 0) { await bot.sendMessage(chatId, 'No X posts saved yet. Try /xpost to post something first!'); return; }
+      const msg = xRows.rows.map((r, i) => (i+1) + '. ' + r.content.substring(0, 80) + (r.tweet_id ? ' [posted]' : ' [deleted]')).join('\n\n');
+      await bot.sendMessage(chatId, 'Last X Posts:\n\n' + msg);
       return;
     }
 
