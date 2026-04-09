@@ -80,34 +80,36 @@ async function initDB() {
 async function webSearch(query) {
   return new Promise((resolve) => {
     if (!BRAVE_API_KEY) {
-      resolve(`[Web search not configured — add BRAVE_API_KEY to Railway]`);
+      resolve('[Web search not configured]');
       return;
     }
     const options = {
       hostname: 'api.search.brave.com',
-      path: `/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`,
+      path: '/res/v1/web/search?q=' + encodeURIComponent(query) + '&count=5',
       headers: {
         'Accept': 'application/json',
-        'Accept-Encoding': 'gzip',
         'X-Subscription-Token': BRAVE_API_KEY
       }
     };
     https.get(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
+      let chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(data);
-          const results = parsed.web?.results || parsed.results || [];
-          if (parsed.error) { resolve("Search API error: " + JSON.stringify(parsed.error)); return; }
-          console.log("Brave returned:", results.length, "results");
-          const summary = results.map(r => `• ${r.title}: ${r.description}`).join('\n');
-          resolve(summary || 'No results found.');
-        } catch {
-          resolve('Search error — try again.');
+          const raw = Buffer.concat(chunks).toString('utf8');
+          const parsed = JSON.parse(raw);
+          if (parsed.error) { resolve('Search error: ' + JSON.stringify(parsed.error)); return; }
+          const results = parsed.web?.results || [];
+          console.log('Brave returned:', results.length, 'results for:', query);
+          if (results.length === 0) { resolve('No results found.'); return; }
+          const summary = results.slice(0, 5).map(r => '• ' + r.title + ': ' + (r.description || '')).join('\n');
+          resolve(summary);
+        } catch(e) {
+          console.log('Search parse error:', e.message);
+          resolve('Search parse error.');
         }
       });
-    }).on('error', () => resolve('Search unavailable.'));
+    }).on('error', (e) => { console.log('Search request error:', e.message); resolve('Search unavailable.'); });
   });
 }
 
