@@ -532,7 +532,7 @@ app.get('/', (req, res) => res.send('AJ v4.1 — Telegram + X — Online'));
 
 app.listen(PORT, async () => {
   await initDB();
-  if (process.env.X_API_KEY) { await xEngine.initXDB(); if (process.env.JOSH_CHAT_ID) { xEngine.setTelegramBot(bot, process.env.JOSH_CHAT_ID); } console.log('X engine ready @AJ_agentic'); }
+  if (process.env.X_API_KEY) { await xEngine.initXDB(); xEngine.setTelegramBot(bot, process.env.JOSH_CHAT_ID); xEngine.startSchedules(); }
   console.log(`AJ v2 running on port ${PORT}`);
   if (WEBHOOK_URL) {
     const webhookEndpoint = `${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`;
