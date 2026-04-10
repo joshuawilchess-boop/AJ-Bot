@@ -372,8 +372,10 @@ async function checkMentions() {
         [replyDraft, 'mention_reply:' + tweet.id, 'pending']
       );
 
+      const safeTweetText = tweet.text.replace(/[*_`\[\]]/g, '');
+      const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
       await telegramBot.sendMessage(joshuaChatId,
-        '🔔 @' + author.username + ' tagged @AJ_agentic:\n\n"' + tweet.text + '"\n\nMy draft reply:\n\n' + replyDraft + '\n\nReply YES to post or NO to skip.'
+        '🔔 @' + author.username + ' tagged @AJ_agentic:\n\n"' + safeTweetText + '"\n\nMy draft reply:\n\n' + safeReply + '\n\nReply YES to post or NO to skip.'
       );
 
       console.log('Mention from @' + author.username + ' — sent for approval');
@@ -451,8 +453,10 @@ async function scanViralPosts() {
       [replyDraft, 'viral_reply:' + top.id, 'pending']
     );
 
+    const safeViralText = top.text.substring(0, 200).replace(/[*_`\[\]]/g, '');
+    const safeViralReply = replyDraft.replace(/[*_`\[\]]/g, '');
     await telegramBot.sendMessage(joshuaChatId,
-      '🔥 Viral post spotted in your niche:\n\n@' + author.username + ' (' + likes + ' likes):\n"' + top.text.substring(0, 200) + '"\n\nhttps://x.com/' + author.username + '/status/' + top.id + '\n\nMy draft reply:\n\n' + replyDraft + '\n\nReply YES to reply or NO to skip.'
+      '🔥 Viral post in your niche:\n\n@' + author.username + ' (' + likes + ' likes, ' + retweets + ' RTs):\n' + safeViralText + '\n\nx.com/' + author.username + '/status/' + top.id + '\n\nDraft reply:\n\n' + safeViralReply + '\n\nYES to reply · NO to skip'
     );
 
     console.log('Viral post found from @' + author.username);
