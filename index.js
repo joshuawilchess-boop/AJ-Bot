@@ -85,6 +85,20 @@ async function saveMessage(chatId, role, content) {
   );
 }
 
+async function getXPostContext() {
+  try {
+    const { rows } = await pool.query(
+      'SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 10'
+    );
+    if (rows.length === 0) return 'No posts yet on @AJ_agentic.';
+    return rows.map((r, i) => 
+      (i+1) + '. ' + r.content + (r.tweet_id ? ' [live: x.com/AJ_agentic/status/' + r.tweet_id + ']' : ' [deleted]')
+    ).join('\n');
+  } catch(e) {
+    return 'Could not load X posts.';
+  }
+}
+
 async function getTaskSummary() {
   const { rows } = await pool.query(`
     SELECT t.*, p.name as project_name 
@@ -361,19 +375,25 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     if (textLower === '/xview') {
       try {
-        const { rows } = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY created_at DESC LIMIT 10');
-        if (rows.length === 0) {
-          await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet. Use /xtest to generate your first one!');
+        const { TwitterApi } = require('twitter-api-v2');
+        const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
+        const me = await tw.v2.me();
+        const timeline = await tw.v2.userTimeline(me.data.id, { max_results: 10, 'tweet.fields': ['created_at', 'public_metrics'] });
+        const tweets = timeline.data?.data || [];
+        if (tweets.length === 0) {
+          await bot.sendMessage(chatId, 'No posts found on @AJ_agentic yet. Use /xtest to generate your first!');
           return;
         }
-        let msg = '*@AJ_agentic recent posts:*\n\n';
-        rows.forEach((r, i) => {
-          msg += (i+1) + '. ' + r.content.substring(0, 100) + '\n';
-          msg += 'https://x.com/AJ_agentic/status/' + r.tweet_id + '\n\n';
+        let msg = '@AJ_agentic recent posts:\n\n';
+        tweets.forEach((t, i) => {
+          msg += (i+1) + '. ' + t.text.substring(0, 120) + '\n';
+          msg += 'https://x.com/AJ_agentic/status/' + t.id + '\n\n';
         });
-        await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, msg);
       } catch(e) {
-        await bot.sendMessage(chatId, 'Could not fetch X posts: ' + e.message);
+        console.error('xview error:', e.message);
+        const xContext = await getXPostContext();
+        await bot.sendMessage(chatId, 'From my database:\n\n' + xContext);
       }
       return;
     }
