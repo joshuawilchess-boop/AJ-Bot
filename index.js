@@ -191,11 +191,13 @@ function formatTasks(tasks) {
 app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   res.sendStatus(200);
   const update = req.body;
-  if (!update.message || !update.message.text) return;
+  if (!update.message) return;
+  if (!update.message.text && !update.message.photo && !update.message.document) return;
 
   const chatId = update.message.chat.id.toString();
-  const text = update.message.text;
+  const text = update.message.text || update.message.caption || '';
   const textLower = text.toLowerCase();
+  const hasPhoto = !!(update.message.photo || (update.message.document && update.message.document.mime_type && update.message.document.mime_type.startsWith('image/')));
 
   try {
     await bot.sendChatAction(chatId, 'typing');
@@ -357,11 +359,89 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    if (textLower === '/xview') {
+      try {
+        const { rows } = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY created_at DESC LIMIT 10');
+        if (rows.length === 0) {
+          await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet. Use /xtest to generate your first one!');
+          return;
+        }
+        let msg = '*@AJ_agentic recent posts:*\n\n';
+        rows.forEach((r, i) => {
+          msg += (i+1) + '. ' + r.content.substring(0, 100) + '\n';
+          msg += 'https://x.com/AJ_agentic/status/' + r.tweet_id + '\n\n';
+        });
+        await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+      } catch(e) {
+        await bot.sendMessage(chatId, 'Could not fetch X posts: ' + e.message);
+      }
+      return;
+    }
+
+    if (textLower === '/xtest') {
+      await bot.sendMessage(chatId, 'Generating a test post for approval...');
+      await xEngine.middayHotTake();
+      return;
+    }
+
     if (textLower === '/xlast') {
       const xRows = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 5').catch(() => ({ rows: [] }));
       if (xRows.rows.length === 0) { await bot.sendMessage(chatId, 'No X posts saved yet. Try /xpost to post something first!'); return; }
       const msg = xRows.rows.map((r, i) => (i+1) + '. ' + r.content.substring(0, 80) + (r.tweet_id ? ' [posted]' : ' [deleted]')).join('\n\n');
       await bot.sendMessage(chatId, 'Last X Posts:\n\n' + msg);
+      return;
+    }
+
+    if (hasPhoto) {
+      await bot.sendChatAction(chatId, 'typing');
+      try {
+        const photoArray = update.message.photo;
+        const fileId = photoArray ? photoArray[photoArray.length - 1].file_id : update.message.document.file_id;
+        const fileInfo = await bot.getFile(fileId);
+        const fileUrl = 'https://api.telegram.org/file/bot' + TELEGRAM_TOKEN + '/' + fileInfo.file_path;
+        
+        const https = require('https');
+        const imageBuffer = await new Promise((resolve, reject) => {
+          https.get(fileUrl, (res) => {
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          });
+        });
+        
+        const base64Image = imageBuffer.toString('base64');
+        const ext = fileInfo.file_path.split('.').pop().toLowerCase();
+        const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'image/jpeg';
+        
+        const taskContext = await getTaskContext();
+        const memoryContext = await buildMemoryContext();
+        
+        const visionResponse = await client.messages.create({
+          model: 'claude-opus-4-6',
+          max_tokens: 1500,
+          system: `You are AJ, Josh's personal AI business agent. You have vision capabilities and can analyze images, screenshots, dashboards, charts, documents, and anything Josh sends you. Be direct and sharp about what you see. If it's a business document or screenshot, give actionable insights. If it's something else, analyze it fully.
+
+Current tasks:
+${taskContext}
+
+Memory:
+${memoryContext}`,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
+              { type: 'text', text: text || 'What do you see here? Give me your analysis.' }
+            ]
+          }]
+        });
+        
+        const imageReply = visionResponse.content[0].text;
+        await bot.sendMessage(chatId, imageReply, { parse_mode: 'Markdown' });
+      } catch(imgErr) {
+        console.error('Image analysis error:', imgErr.message);
+        await bot.sendMessage(chatId, 'Hit a snag analyzing that image — try again.');
+      }
       return;
     }
 
