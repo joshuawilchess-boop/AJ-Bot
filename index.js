@@ -329,6 +329,34 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    if (textLower.startsWith('yes') && text.length < 10) {
+      const { rows } = await pool.query(
+        'SELECT * FROM pending_x_posts WHERE status = $1 ORDER BY created_at DESC LIMIT 1',
+        ['pending']
+      );
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts waiting for approval.'); return; }
+      const pending = rows[0];
+      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['approved', pending.id]);
+      const tweetId = await xEngine.postToX(pending.content);
+      if (tweetId) {
+        await bot.sendMessage(chatId, 'Posted to @AJ_agentic! https://x.com/AJ_agentic/status/' + tweetId);
+      } else {
+        await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
+      }
+      return;
+    }
+
+    if (textLower.startsWith('no') && text.length < 10) {
+      const { rows } = await pool.query(
+        'SELECT * FROM pending_x_posts WHERE status = $1 ORDER BY created_at DESC LIMIT 1',
+        ['pending']
+      );
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts to skip.'); return; }
+      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['rejected', rows[0].id]);
+      await bot.sendMessage(chatId, 'Skipped. Want me to write a different version? Just say what vibe you want.');
+      return;
+    }
+
     if (textLower === '/xlast') {
       const xRows = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 5').catch(() => ({ rows: [] }));
       if (xRows.rows.length === 0) { await bot.sendMessage(chatId, 'No X posts saved yet. Try /xpost to post something first!'); return; }
@@ -392,7 +420,7 @@ app.get('/', (req, res) => res.send('AJ v4.1 — Telegram + X — Online'));
 
 app.listen(PORT, async () => {
   await initDB();
-  if (process.env.X_API_KEY) { await xEngine.initXDB(); console.log('X engine ready @AJ_agentic'); }
+  if (process.env.X_API_KEY) { await xEngine.initXDB(); if (process.env.JOSH_CHAT_ID) { xEngine.setTelegramBot(bot, process.env.JOSH_CHAT_ID); } console.log('X engine ready @AJ_agentic'); }
   console.log(`AJ v2 running on port ${PORT}`);
   if (WEBHOOK_URL) {
     const webhookEndpoint = `${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`;

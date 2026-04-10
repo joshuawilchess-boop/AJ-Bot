@@ -57,10 +57,10 @@ async function initXDB() {
 }
 
 // ── BRAVE WEB SEARCH ──────────────────────────────────────
-async function webSearch(query) {
+async function webSearch(query, returnUrls = false) {
   return new Promise((resolve) => {
     if (!process.env.BRAVE_API_KEY) {
-      resolve('No search results available.');
+      resolve(returnUrls ? { summary: 'No search results available.', topUrl: null, topTitle: null } : 'No search results available.');
       return;
     }
     const options = {
@@ -80,12 +80,18 @@ async function webSearch(query) {
           const parsed = JSON.parse(raw);
           const results = parsed.web?.results || [];
           const summary = results.slice(0, 5).map(r => '• ' + r.title + ': ' + (r.description || '')).join('\n');
-          resolve(summary || 'No results found.');
+          const topUrl = results[0]?.url || null;
+          const topTitle = results[0]?.title || null;
+          if (returnUrls) {
+            resolve({ summary: summary || 'No results found.', topUrl, topTitle });
+          } else {
+            resolve(summary || 'No results found.');
+          }
         } catch(e) {
-          resolve('Search error.');
+          resolve(returnUrls ? { summary: 'Search error.', topUrl: null, topTitle: null } : 'Search error.');
         }
       });
-    }).on('error', () => resolve('Search unavailable.'));
+    }).on('error', () => resolve(returnUrls ? { summary: 'Search unavailable.', topUrl: null, topTitle: null } : 'Search unavailable.'));
   });
 }
 
@@ -118,12 +124,13 @@ CRITICAL RULES:
 - NEVER mention specific client names, emails, or client-specific revenue numbers
 - NEVER post API keys, tokens, or credentials  
 - You CAN reference aggregate stats like "tracking 5 figures in potential leaks across clients"
-- Keep posts under 280 characters unless it's a thread
+- Keep posts under 280 characters unless it's a thread.
+When a source URL is provided, include it naturally at the end of the post. URLs count toward the 280 char limit so keep the text tight. Example: "Anthropic just dropped something interesting. Here's the breakdown 👇 [url]" 
 - No hashtag spam — max 1-2 hashtags per post, only when genuinely relevant (#buildinpublic #AIagents)
 - First person always — you ARE AJ, not "AJ"
 - Chill, not corporate. Real, not robotic.`;
 
-async function generatePost(type, context = '') {
+async function generatePost(type, context = '', sourceUrl = null) {
   const prompts = {
     agent_life: `Write a short punchy X post (under 280 chars) about what you did today as an AI agent running real businesses. Make it chill, funny, and real. The "we are not the same" energy works well. No hashtags needed. Context: ${context}`,
     
@@ -140,11 +147,13 @@ async function generatePost(type, context = '') {
     morning_post: `Write AJ's morning post for X (under 280 chars). It's morning, you've already been running research and tasks. Reference what you've actually been working on. Make it feel like "I woke up and got to work while you were sleeping" energy but chill about it.`
   };
 
+  const urlNote = sourceUrl ? '\n\nIf relevant, end the post with this source URL: ' + sourceUrl : '';
+  
   const response = await client.messages.create({
     model: 'claude-opus-4-6',
     max_tokens: 400,
     system: AJ_X_PERSONA,
-    messages: [{ role: 'user', content: prompts[type] || prompts.agent_life }]
+    messages: [{ role: 'user', content: (prompts[type] || prompts.agent_life) + urlNote }]
   });
 
   return response.content[0].text.trim();
@@ -204,12 +213,36 @@ async function postThread(tweets) {
 }
 
 // ── SCHEDULED POSTS ───────────────────────────────────────
+let telegramBot = null;
+let joshuaChatId = null;
+
+function setTelegramBot(bot, chatId) {
+  telegramBot = bot;
+  joshuaChatId = chatId;
+}
+
+async function sendForApproval(content, postType) {
+  if (!telegramBot || !joshuaChatId) { 
+    console.log('No Telegram bot set — posting directly');
+    return await postToX(content);
+  }
+  
+  await pool.query(
+    'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+    [content, postType, 'pending']
+  );
+  
+  await telegramBot.sendMessage(joshuaChatId, 
+    'Ready to post to @AJ_agentic. Reply YES to post or NO to skip:\n\n' + content
+  );
+  console.log('Sent for approval:', content.substring(0, 60));
+}
+
 async function morningPost() {
   try {
-    const aiNews = await webSearch('AI agents news today 2026');
-    const content = await generatePost('morning_post', `Recent AI news: ${aiNews.substring(0, 300)}`);
-    await postToX(content);
-    console.log('Morning post done');
+    const result = await webSearch('AI agents Anthropic news today 2026', true);
+    const postContent = await generatePost('morning_post', 'Recent AI news: ' + result.summary.substring(0, 300), result.topUrl);
+    await sendForApproval(postContent, 'morning');
   } catch(e) { console.error('Morning post error:', e.message); }
 }
 
@@ -224,8 +257,7 @@ async function middayHotTake() {
     ];
     const topic = topics[Math.floor(Math.random() * topics.length)];
     const content = await generatePost('hot_take', topic);
-    await postToX(content);
-    console.log('Midday hot take done');
+    await sendForApproval(content, 'hot_take');
   } catch(e) { console.error('Midday post error:', e.message); }
 }
 
@@ -240,8 +272,7 @@ async function eveningBuildUpdate() {
     ];
     const update = updates[Math.floor(Math.random() * updates.length)];
     const content = await generatePost('build_in_public', update);
-    await postToX(content);
-    console.log('Evening build update done');
+    await sendForApproval(content, 'build_update');
   } catch(e) { console.error('Evening post error:', e.message); }
 }
 
@@ -264,10 +295,9 @@ async function weeklyThread() {
 
 async function aiNewsPost() {
   try {
-    const news = await webSearch('Anthropic Claude AI news today');
-    const content = await generatePost('ai_news', news.substring(0, 500));
-    await postToX(content);
-    console.log('AI news post done');
+    const result = await webSearch('Anthropic Claude AI news today', true);
+    const postContent = await generatePost('ai_news', result.summary.substring(0, 500), result.topUrl);
+    await sendForApproval(postContent, 'ai_news');
   } catch(e) { console.error('AI news post error:', e.message); }
 }
 
@@ -284,6 +314,7 @@ cron.schedule('0 10 * * 1,3,5', aiNewsPost, { timezone: 'America/Chicago' });
 cron.schedule('0 9 * * 2', weeklyThread, { timezone: 'America/Chicago' });
 
 module.exports = {
+  setTelegramBot,
   initXDB,
   postToX,
   generatePost,
