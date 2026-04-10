@@ -26,6 +26,10 @@ async function initXDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  // Add missing columns if they don't exist yet
+  await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'posted'`);
+  await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS post_type TEXT DEFAULT 'scheduled'`);
+  await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS posted_at TIMESTAMP`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pending_x_posts (
       id SERIAL PRIMARY KEY,
