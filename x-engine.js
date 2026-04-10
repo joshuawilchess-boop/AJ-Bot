@@ -344,20 +344,24 @@ async function checkMentions() {
     console.log('Checking mentions for @AJ_agentic...');
     const me = await tw.v2.me();
     console.log('Authenticated as:', me.data.username, 'id:', me.data.id);
-    const mentions = await tw.v2.userMentionTimeline(me.data.id, {
+    
+    const lastId = await getLastCheckedMentionId();
+    const params = {
       max_results: 10,
-      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id'],
+      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id', 'in_reply_to_user_id'],
       'user.fields': ['username', 'name'],
       expansions: ['author_id'],
-      since_id: await getLastCheckedMentionId()
-    });
+    };
+    if (lastId) params.since_id = lastId;
+    
+    const mentions = await tw.v2.userMentionTimeline(me.data.id, params);
 
     const tweets = mentions.data?.data || [];
-    console.log('Mentions found:', tweets.length);
+    console.log('Mentions found:', tweets.length, lastId ? 'since id: ' + lastId : '(no filter)');
     if (tweets.length === 0) {
       console.log('No new mentions found.');
       if (telegramBot && joshuaChatId) {
-        await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic found right now.');
+        await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic found right now. Try tagging the account on X and check again in a few minutes.');
       }
       return;
     }
@@ -407,8 +411,14 @@ async function getLastCheckedMentionId() {
 
 async function saveMentionId(id) {
   try {
-    await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', $1)", [id]);
-  } catch(e) {}
+    const { rows } = await pool.query("SELECT id FROM memories WHERE category = 'last_mention_id' LIMIT 1");
+    if (rows.length > 0) {
+      await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_mention_id'", [id]);
+    } else {
+      await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', $1)", [id]);
+    }
+    console.log('Saved last mention ID:', id);
+  } catch(e) { console.error('saveMentionId error:', e.message); }
 }
 
 // ── VIRAL POST SCANNER ────────────────────────────────────
