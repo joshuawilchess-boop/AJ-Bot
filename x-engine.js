@@ -341,7 +341,9 @@ async function checkMentions() {
       accessSecret: process.env.X_ACCESS_SECRET,
     });
 
+    console.log('Checking mentions for @AJ_agentic...');
     const me = await tw.v2.me();
+    console.log('Authenticated as:', me.data.username, 'id:', me.data.id);
     const mentions = await tw.v2.userMentionTimeline(me.data.id, {
       max_results: 10,
       'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id'],
@@ -351,7 +353,14 @@ async function checkMentions() {
     });
 
     const tweets = mentions.data?.data || [];
-    if (tweets.length === 0) return;
+    console.log('Mentions found:', tweets.length);
+    if (tweets.length === 0) {
+      console.log('No new mentions found.');
+      if (telegramBot && joshuaChatId) {
+        await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic found right now.');
+      }
+      return;
+    }
 
     const users = mentions.data?.includes?.users || [];
     const userMap = {};
@@ -382,6 +391,10 @@ async function checkMentions() {
     }
   } catch(e) {
     console.error('Mention check error:', e.message);
+    console.error('Full error:', JSON.stringify(e.data || e.errors || e.message));
+    if (telegramBot && joshuaChatId) {
+      await telegramBot.sendMessage(joshuaChatId, 'Mention check failed: ' + e.message);
+    }
   }
 }
 
