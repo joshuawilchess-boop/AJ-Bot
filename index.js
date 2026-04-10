@@ -164,15 +164,16 @@ YOUR ROLE AS AJ:
 async function getAJResponse(chatId, userMessage) {
   const history = await getHistory(chatId);
   const taskContext = await getTaskContext();
+  const xPostContext = await getXPostContext();
 
-  const systemWithTasks = `${AJ_SYSTEM}\n\nCURRENT TASK LIST:\n${taskContext}`;
+  const systemWithContext = AJ_SYSTEM + '\n\nCURRENT TASK LIST:\n' + taskContext + '\n\nYOUR RECENT X POSTS (@AJ_agentic) — you can read and reference these freely:\n' + xPostContext;
 
   history.push({ role: 'user', content: userMessage });
 
   const response = await client.messages.create({
     model: 'claude-opus-4-5',
     max_tokens: 1024,
-    system: systemWithTasks,
+    system: systemWithContext,
     messages: history
   });
 
