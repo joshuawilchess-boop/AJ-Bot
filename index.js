@@ -354,7 +354,14 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts waiting for approval.'); return; }
       const pending = rows[0];
       await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['approved', pending.id]);
-      const tweetId = await xEngine.postToX(pending.content);
+
+      // Check if this is a reply to another tweet
+      let replyToId = null;
+      if (pending.post_type && pending.post_type.includes(':')) {
+        replyToId = pending.post_type.split(':')[1];
+      }
+
+      const tweetId = await xEngine.postToX(pending.content, replyToId);
       if (tweetId) {
         await bot.sendMessage(chatId, 'Posted to @AJ_agentic! https://x.com/AJ_agentic/status/' + tweetId);
       } else {
@@ -396,6 +403,18 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const xContext = await getXPostContext();
         await bot.sendMessage(chatId, 'From my database:\n\n' + xContext);
       }
+      return;
+    }
+
+    if (textLower === '/xscan') {
+      await bot.sendMessage(chatId, '🔍 Scanning for viral posts in your niche...');
+      await xEngine.scanViralPosts();
+      return;
+    }
+
+    if (textLower === '/xmentions') {
+      await bot.sendMessage(chatId, '🔔 Checking for mentions of @AJ_agentic...');
+      await xEngine.checkMentions();
       return;
     }
 

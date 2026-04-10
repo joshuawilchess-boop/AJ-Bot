@@ -324,5 +324,139 @@ module.exports = {
   middayHotTake,
   eveningBuildUpdate,
   weeklyThread,
-  aiNewsPost
+  aiNewsPost,
+  checkMentions,
+  scanViralPosts
 };
+
+// ── MENTION MONITOR ───────────────────────────────────────
+async function checkMentions() {
+  if (!process.env.X_API_KEY) return;
+  try {
+    const { TwitterApi } = require('twitter-api-v2');
+    const tw = new TwitterApi({
+      appKey: process.env.X_API_KEY,
+      appSecret: process.env.X_API_SECRET,
+      accessToken: process.env.X_ACCESS_TOKEN,
+      accessSecret: process.env.X_ACCESS_SECRET,
+    });
+
+    const me = await tw.v2.me();
+    const mentions = await tw.v2.userMentionTimeline(me.data.id, {
+      max_results: 10,
+      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id'],
+      'user.fields': ['username', 'name'],
+      expansions: ['author_id'],
+      since_id: await getLastCheckedMentionId()
+    });
+
+    const tweets = mentions.data?.data || [];
+    if (tweets.length === 0) return;
+
+    const users = mentions.data?.includes?.users || [];
+    const userMap = {};
+    users.forEach(u => { userMap[u.id] = u; });
+
+    for (const tweet of tweets) {
+      const author = userMap[tweet.author_id] || { username: 'unknown', name: 'Someone' };
+      await saveMentionId(tweet.id);
+
+      const replyDraft = await generatePost('reply',
+        '@' + author.username + ' said: ' + tweet.text
+      );
+
+      if (!telegramBot || !joshuaChatId) continue;
+
+      await pool.query(
+        'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+        [replyDraft, 'mention_reply:' + tweet.id, 'pending']
+      );
+
+      await telegramBot.sendMessage(joshuaChatId,
+        '🔔 @' + author.username + ' tagged @AJ_agentic:\n\n"' + tweet.text + '"\n\nMy draft reply:\n\n' + replyDraft + '\n\nReply YES to post or NO to skip.'
+      );
+
+      console.log('Mention from @' + author.username + ' — sent for approval');
+    }
+  } catch(e) {
+    console.error('Mention check error:', e.message);
+  }
+}
+
+async function getLastCheckedMentionId() {
+  try {
+    const { rows } = await pool.query("SELECT content FROM memories WHERE category = 'last_mention_id' ORDER BY created_at DESC LIMIT 1");
+    return rows.length > 0 ? rows[0].content : undefined;
+  } catch(e) { return undefined; }
+}
+
+async function saveMentionId(id) {
+  try {
+    await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', $1)", [id]);
+  } catch(e) {}
+}
+
+// ── VIRAL POST SCANNER ────────────────────────────────────
+async function scanViralPosts() {
+  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
+  try {
+    const { TwitterApi } = require('twitter-api-v2');
+    const tw = new TwitterApi({
+      appKey: process.env.X_API_KEY,
+      appSecret: process.env.X_API_SECRET,
+      accessToken: process.env.X_ACCESS_TOKEN,
+      accessSecret: process.env.X_ACCESS_SECRET,
+    });
+
+    const niches = [
+      'AI agents entrepreneurs',
+      'vibe coding startup',
+      'build in public AI',
+      'autonomous agents startup founders'
+    ];
+    const query = niches[Math.floor(Math.random() * niches.length)] + ' -is:retweet lang:en';
+
+    const results = await tw.v2.search(query, {
+      max_results: 10,
+      'tweet.fields': ['public_metrics', 'author_id', 'created_at', 'text'],
+      'user.fields': ['username', 'name', 'public_metrics'],
+      expansions: ['author_id'],
+      sort_order: 'relevancy'
+    });
+
+    const tweets = results.data?.data || [];
+    if (tweets.length === 0) return;
+
+    const users = results.data?.includes?.users || [];
+    const userMap = {};
+    users.forEach(u => { userMap[u.id] = u; });
+
+    // Pick the most engaged tweet
+    const top = tweets.sort((a, b) => {
+      const aScore = (a.public_metrics?.like_count || 0) + (a.public_metrics?.retweet_count || 0) * 2;
+      const bScore = (b.public_metrics?.like_count || 0) + (b.public_metrics?.retweet_count || 0) * 2;
+      return bScore - aScore;
+    })[0];
+
+    const author = userMap[top.author_id] || { username: 'unknown', name: 'Someone' };
+    const likes = top.public_metrics?.like_count || 0;
+    const retweets = top.public_metrics?.retweet_count || 0;
+
+    const replyDraft = await generatePost('reply',
+      'Viral post by @' + author.username + ' (' + likes + ' likes, ' + retweets + ' retweets): ' + top.text
+    );
+
+    await pool.query(
+      'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+      [replyDraft, 'viral_reply:' + top.id, 'pending']
+    );
+
+    await telegramBot.sendMessage(joshuaChatId,
+      '🔥 Viral post spotted in your niche:\n\n@' + author.username + ' (' + likes + ' likes):\n"' + top.text.substring(0, 200) + '"\n\nhttps://x.com/' + author.username + '/status/' + top.id + '\n\nMy draft reply:\n\n' + replyDraft + '\n\nReply YES to reply or NO to skip.'
+    );
+
+    console.log('Viral post found from @' + author.username);
+  } catch(e) {
+    console.error('Viral scan error:', e.message);
+  }
+}
