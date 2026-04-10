@@ -87,13 +87,25 @@ async function saveMessage(chatId, role, content) {
 
 async function getXPostContext() {
   try {
-    const { rows } = await pool.query(
-      'SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 10'
+    const posted = await pool.query(
+      "SELECT content, tweet_id, post_type, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 10"
     );
-    if (rows.length === 0) return 'No posts yet on @AJ_agentic.';
-    return rows.map((r, i) => 
-      (i+1) + '. ' + r.content + (r.tweet_id ? ' [live: x.com/AJ_agentic/status/' + r.tweet_id + ']' : ' [deleted]')
-    ).join('\n');
+    const approved = await pool.query(
+      "SELECT content, post_type, created_at FROM pending_x_posts WHERE status = 'approved' ORDER BY created_at DESC LIMIT 5"
+    );
+    let lines = [];
+    if (posted.rows.length === 0 && approved.rows.length === 0) return 'No posts yet on @AJ_agentic.';
+    posted.rows.forEach((r, i) => {
+      const type = r.post_type || 'post';
+      const link = r.tweet_id ? ' [x.com/AJ_agentic/status/' + r.tweet_id + ']' : '';
+      lines.push((i+1) + '. [' + type + '] ' + r.content + link);
+    });
+    approved.rows.forEach(r => {
+      if (!posted.rows.find(p => p.content === r.content)) {
+        lines.push('[recently approved ' + (r.post_type || 'post') + '] ' + r.content);
+      }
+    });
+    return lines.join('\n');
   } catch(e) {
     return 'Could not load X posts.';
   }
