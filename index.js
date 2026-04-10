@@ -419,48 +419,40 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const fileId = photoArray ? photoArray[photoArray.length - 1].file_id : update.message.document.file_id;
         const fileInfo = await bot.getFile(fileId);
         const fileUrl = 'https://api.telegram.org/file/bot' + TELEGRAM_TOKEN + '/' + fileInfo.file_path;
-        
-        const https = require('https');
+        const lib = require('https');
         const imageBuffer = await new Promise((resolve, reject) => {
-          https.get(fileUrl, (res) => {
+          lib.get(fileUrl, (imgRes) => {
             const chunks = [];
-            res.on('data', chunk => chunks.push(chunk));
-            res.on('end', () => resolve(Buffer.concat(chunks)));
-            res.on('error', reject);
+            imgRes.on('data', c => chunks.push(c));
+            imgRes.on('end', () => resolve(Buffer.concat(chunks)));
+            imgRes.on('error', reject);
           });
         });
-        
         const base64Image = imageBuffer.toString('base64');
-        const ext = fileInfo.file_path.split('.').pop().toLowerCase();
-        const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'image/jpeg';
-        
-        const taskContext = await getTaskContext();
-        const memoryContext = await buildMemoryContext();
-        
+        const ext = (fileInfo.file_path || '').split('.').pop().toLowerCase();
+        const mediaType = (ext === 'png') ? 'image/png' : 'image/jpeg';
+        let taskCtx = 'No active tasks.';
+        try {
+          const tRows = await pool.query("SELECT title, project FROM tasks WHERE status != 'done' ORDER BY created_at ASC LIMIT 10");
+          if (tRows.rows.length > 0) taskCtx = tRows.rows.map(r => r.project + ': ' + r.title).join(', ');
+        } catch(e) {}
         const visionResponse = await client.messages.create({
           model: 'claude-opus-4-6',
           max_tokens: 1500,
-          system: `You are AJ, Josh's personal AI business agent. You have vision capabilities and can analyze images, screenshots, dashboards, charts, documents, and anything Josh sends you. Be direct and sharp about what you see. If it's a business document or screenshot, give actionable insights. If it's something else, analyze it fully.
-
-Current tasks:
-${taskContext}
-
-Memory:
-${memoryContext}`,
+          system: 'You are AJ, Josh personal AI business agent with full vision. Analyze whatever Josh sends — screenshots, dashboards, documents, photos, anything. Be direct, sharp, and give actionable insights if business-related. Active tasks: ' + taskCtx,
           messages: [{
             role: 'user',
             content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-              { type: 'text', text: text || 'What do you see here? Give me your analysis.' }
+              { type: 'text', text: text || 'What do you see? Give me your full analysis.' }
             ]
           }]
         });
-        
         const imageReply = visionResponse.content[0].text;
         await bot.sendMessage(chatId, imageReply, { parse_mode: 'Markdown' });
       } catch(imgErr) {
         console.error('Image analysis error:', imgErr.message);
-        await bot.sendMessage(chatId, 'Hit a snag analyzing that image — try again.');
+        await bot.sendMessage(chatId, 'Hit a snag analyzing that — try again.');
       }
       return;
     }
