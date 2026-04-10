@@ -179,90 +179,90 @@ async function postThread(tweets) {
   return lastId;
 }
 
-// ── MENTION MONITOR (Brave search based) ─────────────────
+// ── MENTION MONITOR (X API recent search) ────────────────
 async function checkMentions() {
-  if (!process.env.BRAVE_API_KEY || !telegramBot || !joshuaChatId) return;
+  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
   try {
-    console.log('Searching for @AJ_agentic mentions via Brave...');
-
-    const result = await webSearch('"@AJ_agentic" OR "AJ_agentic" site:x.com OR site:twitter.com', true);
-    const searchText = result.summary || '';
-
-    if (!searchText || searchText === 'No results found.' || searchText === 'Search failed.') {
-      console.log('No mentions found.');
-      if (telegramBot) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic found. Try tagging the account and check again.');
-      return;
-    }
-
-    const lastHash = await getLastMentionHash();
-    const searchHash = Buffer.from(searchText.substring(0, 100)).toString('base64').substring(0, 20);
-
-    if (lastHash === searchHash) {
-      console.log('No new mentions since last check.');
-      await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic since last check.');
-      return;
-    }
-
-    const extractResponse = await client.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: 'From these search results, extract any actual mentions or tags of @AJ_agentic on X/Twitter. List each with username and what they said. If no real mentions exist, respond with exactly: NONE\n\nResults:\n' + searchText
-      }]
+    console.log('Searching for @AJ_agentic mentions via X API...');
+    const { TwitterApi } = require('twitter-api-v2');
+    const tw = new TwitterApi({
+      appKey: process.env.X_API_KEY,
+      appSecret: process.env.X_API_SECRET,
+      accessToken: process.env.X_ACCESS_TOKEN,
+      accessSecret: process.env.X_ACCESS_SECRET,
     });
 
-    const extracted = extractResponse.content[0].text.trim();
+    const lastId = await getLastMentionId();
+    const params = {
+      max_results: 10,
+      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id'],
+      'user.fields': ['username', 'name'],
+      expansions: ['author_id'],
+    };
+    if (lastId) params.since_id = lastId;
 
-    if (extracted === 'NONE' || extracted.startsWith('NONE') || extracted.length < 20) {
-      console.log('No real mentions extracted.');
-      await saveMentionHash(searchHash);
-      await telegramBot.sendMessage(joshuaChatId, 'No real mentions of @AJ_agentic found right now.');
+    const results = await tw.v2.search('@AJ_agentic -from:AJ_agentic', params);
+    const tweets = results.data?.data || [];
+    console.log('Mentions found via X search:', tweets.length, lastId ? '(since ' + lastId + ')' : '(no filter)');
+
+    if (tweets.length === 0) {
+      console.log('No new mentions found.');
+      await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now. Try tagging the account on X and check again.');
       return;
     }
 
-    console.log('Mentions found, drafting reply...');
-    const replyDraft = await generatePost('reply', 'Someone mentioned @AJ_agentic:\n' + extracted);
+    const users = results.data?.includes?.users || [];
+    const userMap = {};
+    users.forEach(u => { userMap[u.id] = u; });
 
-    const safeExtracted = extracted.replace(/[*_`\[\]]/g, '').substring(0, 300);
-    const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
+    // Save the newest tweet ID so we don't reprocess
+    await saveMentionId(tweets[0].id);
 
-    await pool.query(
-      'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
-      [replyDraft, 'mention_reply', 'pending']
-    );
+    for (const tweet of tweets.slice(0, 3)) {
+      const author = userMap[tweet.author_id] || { username: 'unknown', name: 'Someone' };
+      const safeTweet = tweet.text.replace(/[*_`\[\]]/g, '');
 
-    await telegramBot.sendMessage(joshuaChatId,
-      '🔔 Found mentions of @AJ_agentic:\n\n' + safeExtracted + '\n\nDraft reply:\n\n' + safeReply + '\n\nYES to post · NO to skip'
-    );
+      const replyDraft = await generatePost('reply',
+        '@' + author.username + ' said: ' + tweet.text
+      );
+      const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
 
-    await saveMentionHash(searchHash);
-    console.log('Mention notification sent.');
+      await pool.query(
+        'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+        [replyDraft, 'mention_reply:' + tweet.id, 'pending']
+      );
+
+      await telegramBot.sendMessage(joshuaChatId,
+        '🔔 @' + author.username + ' mentioned @AJ_agentic:\n\n"' + safeTweet + '"\n\nhttps://x.com/' + author.username + '/status/' + tweet.id + '\n\nDraft reply:\n\n' + safeReply + '\n\nYES to post · NO to skip'
+      );
+      console.log('Mention from @' + author.username + ' sent for approval');
+    }
   } catch (e) {
-    console.error('checkMentions error:', e.message);
+    console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
     if (telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention check error: ' + e.message);
   }
 }
 
-async function getLastMentionHash() {
+async function getLastMentionId() {
   try {
-    const { rows } = await pool.query(
-      "SELECT content FROM memories WHERE category = 'last_mention_hash' ORDER BY created_at DESC LIMIT 1"
-    );
-    return rows.length > 0 ? rows[0].content : null;
-  } catch (e) { return null; }
+    const { rows } = await pool.query("SELECT content FROM memories WHERE category = 'last_mention_id' LIMIT 1");
+    return rows.length > 0 ? rows[0].content : undefined;
+  } catch (e) { return undefined; }
 }
 
-async function saveMentionHash(hash) {
+async function saveMentionId(id) {
   try {
-    const { rows } = await pool.query("SELECT id FROM memories WHERE category = 'last_mention_hash' LIMIT 1");
+    const { rows } = await pool.query("SELECT id FROM memories WHERE category = 'last_mention_id' LIMIT 1");
     if (rows.length > 0) {
-      await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_mention_hash'", [hash]);
+      await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_mention_id'", [id]);
     } else {
-      await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_hash', $1)", [hash]);
+      await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', $1)", [id]);
     }
-  } catch (e) { console.error('saveMentionHash error:', e.message); }
+    console.log('Saved last mention ID:', id);
+  } catch (e) { console.error('saveMentionId error:', e.message); }
 }
+
+
 
 // ── VIRAL POST SCANNER (Brave search based) ──────────────
 async function scanViralPosts() {
