@@ -84,24 +84,48 @@ async function saveMessage(chatId, role, content) {
 async function getXPostContext() {
   try {
     const { rows: posted } = await pool.query(
-      "SELECT content, tweet_id, post_type FROM x_posts ORDER BY created_at DESC LIMIT 10"
+      "SELECT content, tweet_id, post_type, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 15"
     );
-    const { rows: approved } = await pool.query(
-      "SELECT content, post_type FROM pending_x_posts WHERE status = 'approved' ORDER BY created_at DESC LIMIT 5"
+    const { rows: pending } = await pool.query(
+      "SELECT content, post_type FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 3"
     );
-    if (posted.length === 0 && approved.length === 0) return 'No posts yet on @AJ_agentic.';
+    const { rows: rejected } = await pool.query(
+      "SELECT content FROM pending_x_posts WHERE status = 'rejected' ORDER BY created_at DESC LIMIT 1"
+    );
+    const { rows: lastDraft } = await pool.query(
+      "SELECT content, post_type FROM pending_x_posts ORDER BY created_at DESC LIMIT 1"
+    );
 
     const lines = [];
-    posted.forEach((r, i) => {
-      const link = r.tweet_id ? ' [x.com/AJ_agentic/status/' + r.tweet_id + ']' : '';
-      lines.push((i + 1) + '. [' + (r.post_type || 'post') + '] ' + r.content + link);
-    });
-    // Add approved replies not already in posted
-    approved.forEach(r => {
-      if (!posted.find(p => p.content === r.content)) {
-        lines.push('[approved ' + (r.post_type || 'post') + '] ' + r.content);
-      }
-    });
+
+    if (posted.length === 0 && pending.length === 0) return 'No posts yet on @AJ_agentic.';
+
+    if (posted.length > 0) {
+      lines.push('--- POSTED ---');
+      posted.forEach((r, i) => {
+        const link = r.tweet_id ? ' → x.com/AJ_agentic/status/' + r.tweet_id : '';
+        const when = r.posted_at ? ' (' + new Date(r.posted_at).toLocaleDateString() + ')' : '';
+        lines.push((i + 1) + '. [' + (r.post_type || 'post') + ']' + when + ' ' + r.content + link);
+      });
+    }
+
+    if (pending.length > 0) {
+      lines.push('\n--- PENDING APPROVAL ---');
+      pending.forEach(r => {
+        const type = r.post_type?.startsWith('image_post::') ? 'image_post' : (r.post_type || 'post');
+        lines.push('• [' + type + '] ' + r.content);
+      });
+    }
+
+    if (rejected.length > 0) {
+      lines.push('\n--- LAST REJECTED (Josh said no to this) ---');
+      lines.push(rejected[0].content);
+    }
+
+    if (lastDraft.length > 0 && lastDraft[0].post_type !== 'pending') {
+      // Last draft regardless of status
+    }
+
     return lines.join('\n');
   } catch (e) {
     return 'Could not load X posts.';
@@ -187,7 +211,7 @@ async function getAJResponse(chatId, userMessage) {
 
   const system = AJ_SYSTEM +
     '\n\nCURRENT TASK LIST:\n' + taskContext +
-    '\n\nYOUR RECENT X POSTS (@AJ_agentic):\n' + xPostContext;
+    '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic) — full history, pending drafts, and last rejected post are all listed below. Use this to stay consistent, avoid repeating yourself, and understand what Josh liked or rejected:\n' + xPostContext;
 
   history.push({ role: 'user', content: userMessage });
 
@@ -391,10 +415,14 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         );
         if (histRows.length > 0) {
           const lastMsg = histRows[0].content;
+          // Try quoted text first, then code block, then any paragraph that looks like a tweet
           const quotedMatch = lastMsg.match(/"([^"]{20,270})"/);
           const codeMatch = lastMsg.match(/```([^`]{20,270})```/s);
-          const draftText = quotedMatch?.[1] || codeMatch?.[1];
-          if (draftText) {
+          const boldMatch = lastMsg.match(/\*([^*]{20,270})\*/);
+          // Last resort: find a standalone paragraph under 280 chars that looks like a post
+          const paraMatch = lastMsg.split('\n').find(line => line.trim().length >= 20 && line.trim().length <= 280 && !line.trim().startsWith('-') && !line.trim().startsWith('•'));
+          const draftText = quotedMatch?.[1] || codeMatch?.[1] || boldMatch?.[1] || (paraMatch?.trim());
+          if (draftText && draftText.length >= 20) {
             const tweetId = await xEngine.postToX(draftText.trim());
             if (tweetId) {
               await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [draftText.trim(), 'conversational', 'approved']);

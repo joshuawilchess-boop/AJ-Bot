@@ -39,6 +39,14 @@ async function initXDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
   console.log('X DB ready');
 }
 
@@ -391,9 +399,14 @@ async function scanViralPosts() {
     const safePicked = picked.replace(/[*_`\[\]]/g, '').substring(0, 300);
     const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
 
+    // Try to extract tweet ID from URL in picked text
+    const tweetUrlMatch = picked.match(/x\.com\/\w+\/status\/(\d+)/);
+    const tweetId = tweetUrlMatch ? tweetUrlMatch[1] : null;
+    const postType = tweetId ? 'mention_reply:' + tweetId : 'viral_reply';
+
     await pool.query(
       'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
-      [replyDraft, 'viral_reply', 'pending']
+      [replyDraft, postType, 'pending']
     );
 
     await telegramBot.sendMessage(joshuaChatId,
