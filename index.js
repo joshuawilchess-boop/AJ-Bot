@@ -245,13 +245,31 @@ You have an active memory that persists across sessions. It's loaded into every 
 
 // ── AI RESPONSE ───────────────────────────────────────────
 async function getAJResponse(chatId, userMessage) {
-  const [history, taskContext, xPostContext] = await Promise.all([
+  const [history, taskContext, xPostContext, activeMemories] = await Promise.all([
     getHistory(chatId),
     getTaskContext(),
-    getXPostContext()
+    getXPostContext(),
+    getActiveMemories()
   ]);
 
+  // Load last shown draft so AJ knows what "that draft" / "that post" refers to
+  let lastDraftContext = '';
+  try {
+    const { rows } = await pool.query("SELECT content FROM memories WHERE category = 'last_shown_draft' LIMIT 1");
+    if (rows.length > 0) {
+      const draft = JSON.parse(rows[0].content);
+      lastDraftContext = '\n\nLAST DRAFT YOU SHOWED JOSH (this is what he means when he says "that post", "that draft", "save that", "use that"):\n' + draft.content + '\n(type: ' + draft.postType + ', saved: ' + draft.savedAt + ')';
+    }
+  } catch(e) {}
 
+  let system = AJ_SYSTEM +
+    '\n\nCURRENT TASK LIST:\n' + taskContext +
+    '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext +
+    lastDraftContext;
+
+  if (activeMemories) {
+    system += '\n\nACTIVE MEMORY:\n' + activeMemories;
+  }
 
   history.push({ role: 'user', content: userMessage });
 
