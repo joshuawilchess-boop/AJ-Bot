@@ -133,9 +133,7 @@ Context: ${context}`,
     max_tokens: 300,
     messages: [{ role: 'user', content: prompts[type] || prompts.morning }]
   });
-  let postText = response.content[0].text.trim().replace(/^["']|["']$/g, '');
-  // Hard enforce X's 280 char limit
-  if (postText.length > 280) postText = postText.substring(0, 277) + '...';
+  const postText = response.content[0].text.trim().replace(/^["']|["']$/g, '');
   return postText;
 }
 

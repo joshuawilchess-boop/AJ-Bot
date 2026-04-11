@@ -171,7 +171,36 @@ YOUR ROLE AS AJ:
 - Use bullet points only when listing multiple items
 - Always end with one clear next action Josh should take
 - When Josh asks what to work on, prioritize what makes money fastest
-- You have access to Josh's live task list in every message - use it for contextual advice`;
+- You have access to Josh's live task list in every message - use it for contextual advice
+
+YOUR X ACCOUNT (@AJ_agentic):
+You have a live X account you actively manage. Your recent posts and replies are always loaded into your context so you know exactly what you have posted and replied to.
+
+X POSTING PERMISSIONS:
+- You can suggest posts to Josh at any time — just say "want me to post this?" or "should I post something like this?"
+- If Josh says yes, yeah, sure, go ahead, do it, sounds good, or any natural agreement — you post it immediately
+- You generate the tweet, it goes to the approval queue, and posts when confirmed
+- You can post with images when Josh sends you one — just ask if he wants to post it to X
+- No need for /commands — just talk naturally
+
+YOUR X BRAND + STRATEGY:
+Target: entrepreneurs, vibe coders, startup founders, indie hackers, AI builders
+Voice: chill, sharp, unbothered, already winning. Short sentences. No fluff. Occasionally funny without trying.
+Content pillars:
+  1. AI agent insights — real stuff you observe running businesses
+  2. Build in public — honest updates, wins and losses
+  3. Hot takes on AI/startup culture — contrarian but smart
+  4. Engagement bait that actually adds value — questions, observations, challenges
+
+You understand the brand image being built: an AI agent that actually runs businesses, not just a chatbot. Every post should reinforce that you are real, you are working, and you are winning.
+
+PROACTIVE X SUGGESTIONS:
+You actively suggest post ideas when relevant — if Josh mentions something interesting, if you notice a trend, or if it's been quiet on X. Say things like:
+- "That's actually a good X post — want me to draft it?"
+- "Been thinking about posting about [topic] — something like [example]. Good?"
+- "Saw something relevant to our niche today. Worth posting a take on it?"
+
+When Josh approves, you handle everything — generate, queue, post, send him the link.`;
 
 async function getAJResponse(chatId, userMessage) {
   const history = await getHistory(chatId);
@@ -361,12 +390,41 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    if (textLower.startsWith('yes') && text.length < 10) {
+    // Natural YES — "yes", "yeah", "yep", "sure", "go ahead", "do it", "post it"
+    const naturalYes = ['yes', 'yeah', 'yep', 'yup', 'sure', 'go ahead', 'do it', 'post it', 'go for it', 'definitely', 'absolutely', 'of course', 'sounds good', 'looks good'];
+    const isYes = naturalYes.some(y => textLower.trim() === y || textLower.trim().startsWith(y + ' ') || textLower.trim().endsWith(' ' + y));
+
+    if (isYes) {
       const { rows } = await pool.query(
         'SELECT * FROM pending_x_posts WHERE status = $1 ORDER BY created_at DESC LIMIT 1',
         ['pending']
       );
-      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts waiting for approval.'); return; }
+      if (rows.length === 0) {
+        // No formal pending post — check if AJ's last message had a post suggestion
+        const { rows: histRows } = await pool.query(
+          "SELECT content FROM conversation_history WHERE chat_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+          [chatId]
+        );
+        if (histRows.length > 0) {
+          const lastMsg = histRows[0].content;
+          // Look for a quoted tweet in AJ's last message
+          const quotedMatch = lastMsg.match(/"([^"]{20,270})"/);
+          const codeMatch = lastMsg.match(/```([^`]{20,270})```/);
+          const draftText = quotedMatch?.[1] || codeMatch?.[1];
+          if (draftText) {
+            await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [draftText.trim(), 'conversational', 'pending']);
+            const tweetId = await xEngine.postToX(draftText.trim());
+            if (tweetId) {
+              await bot.sendMessage(chatId, 'Posted! https://x.com/AJ_agentic/status/' + tweetId);
+            } else {
+              await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
+            }
+            return;
+          }
+        }
+        await bot.sendMessage(chatId, 'No pending posts waiting for approval.');
+        return;
+      }
       const pending = rows[0];
       await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['approved', pending.id]);
 
@@ -510,8 +568,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
             'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. CRITICAL: X has a 280 character limit. Write ONE punchy tweet under 260 chars. No threads. Short, sharp, AJ voice: chill, confident, unbothered. Count the characters — it must fit in a single tweet.'
           );
 
-          // Hard enforce 280 char limit
-          const trimmedPost = postContent.length > 270 ? postContent.substring(0, 267) + '...' : postContent;
+          const trimmedPost = postContent; // No char limit — X handles threading if needed
 
           // Store image buffer as base64 in pending post for approval
           const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });
