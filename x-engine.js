@@ -207,9 +207,9 @@ async function checkMentions() {
     const lastId = await getLastMentionId();
     const params = {
       max_results: 10,
-      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id'],
+      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id', 'in_reply_to_user_id', 'referenced_tweets'],
       'user.fields': ['username', 'name'],
-      expansions: ['author_id'],
+      expansions: ['author_id', 'referenced_tweets.id', 'referenced_tweets.id.author_id'],
     };
     if (lastId) params.since_id = lastId;
 
@@ -219,7 +219,7 @@ async function checkMentions() {
 
     if (tweets.length === 0) {
       console.log('No new mentions found.');
-      await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now. Try tagging the account on X and check again.');
+      await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
@@ -227,16 +227,66 @@ async function checkMentions() {
     const userMap = {};
     users.forEach(u => { userMap[u.id] = u; });
 
-    // Save the newest tweet ID so we don't reprocess
+    // Build a map of referenced (parent) tweets from expansions
+    const referencedTweets = results.data?.includes?.tweets || [];
+    const refTweetMap = {};
+    referencedTweets.forEach(t => { refTweetMap[t.id] = t; });
+
+    // Load already-processed tweet IDs to avoid duplicates
+    const processed = await getProcessedMentionIds();
+
+    // Save the newest tweet ID BEFORE processing so restarts don't re-trigger
     await saveMentionId(tweets[0].id);
 
-    for (const tweet of tweets.slice(0, 3)) {
-      const author = userMap[tweet.author_id] || { username: 'unknown', name: 'Someone' };
-      const safeTweet = tweet.text.replace(/[*_`\[\]]/g, '');
+    let newCount = 0;
+    for (const tweet of tweets.slice(0, 5)) {
+      // Skip if already processed
+      if (processed.includes(tweet.id)) {
+        console.log('Skipping already-processed mention:', tweet.id);
+        continue;
+      }
 
-      const replyDraft = await generatePost('reply',
-        '@' + author.username + ' said: ' + tweet.text
-      );
+      const author = userMap[tweet.author_id] || { username: 'unknown', name: 'Someone' };
+
+      // Build context — find the parent post they are replying in
+      let parentContext = '';
+      if (tweet.referenced_tweets && tweet.referenced_tweets.length > 0) {
+        for (const ref of tweet.referenced_tweets) {
+          if (ref.type === 'replied_to' || ref.type === 'quoted') {
+            const parentTweet = refTweetMap[ref.id];
+            if (parentTweet) {
+              const parentAuthor = userMap[parentTweet.author_id] || { username: 'unknown' };
+              parentContext = 'Context — the post they are replying in (by @' + parentAuthor.username + '): "' + parentTweet.text + '"\n\n';
+            }
+          }
+        }
+      }
+
+      // If we have conversation_id and no parent yet, try fetching the root tweet
+      if (!parentContext && tweet.conversation_id && tweet.conversation_id !== tweet.id) {
+        try {
+          const rootTweet = await tw.v2.singleTweet(tweet.conversation_id, {
+            'tweet.fields': ['author_id', 'text'],
+            'user.fields': ['username'],
+            expansions: ['author_id']
+          });
+          if (rootTweet.data) {
+            const rootUsers = rootTweet.includes?.users || [];
+            const rootAuthor = rootUsers[0] || { username: 'unknown' };
+            parentContext = 'Context — original post by @' + rootAuthor.username + ': "' + rootTweet.data.text + '"\n\n';
+          }
+        } catch (fetchErr) {
+          console.log('Could not fetch parent tweet:', fetchErr.message);
+        }
+      }
+
+      const fullContext = parentContext +
+        '@' + author.username + ' tagged @AJ_agentic and said: "' + tweet.text + '"';
+
+      const replyDraft = await generatePost('reply', fullContext);
+
+      const safeTweet = tweet.text.replace(/[*_`\[\]]/g, '');
+      const safeParent = parentContext.replace(/[*_`\[\]]/g, '');
       const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
 
       await pool.query(
@@ -244,14 +294,54 @@ async function checkMentions() {
         [replyDraft, 'mention_reply:' + tweet.id, 'pending']
       );
 
-      await telegramBot.sendMessage(joshuaChatId,
-        '🔔 @' + author.username + ' mentioned @AJ_agentic:\n\n"' + safeTweet + '"\n\nhttps://x.com/' + author.username + '/status/' + tweet.id + '\n\nDraft reply:\n\n' + safeReply + '\n\nYES to post · NO to skip'
-      );
+      // Mark this tweet ID as processed
+      await markMentionProcessed(tweet.id);
+
+      let msg = '🔔 @' + author.username + ' tagged @AJ_agentic:\n\n';
+      if (safeParent) msg += 'Thread context: ' + safeParent + '\n';
+      msg += 'Their message: "' + safeTweet + '"\n';
+      msg += 'https://x.com/' + author.username + '/status/' + tweet.id + '\n\n';
+      msg += 'Draft reply:\n\n' + safeReply + '\n\nYES to post · NO to skip';
+
+      await telegramBot.sendMessage(joshuaChatId, msg);
       console.log('Mention from @' + author.username + ' sent for approval');
+      newCount++;
+    }
+
+    if (newCount === 0) {
+      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
     if (telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention check error: ' + e.message);
+  }
+}
+
+async function getProcessedMentionIds() {
+  try {
+    const { rows } = await pool.query(
+      "SELECT content FROM memories WHERE category = 'processed_mention_id' ORDER BY created_at DESC LIMIT 50"
+    );
+    return rows.map(r => r.content);
+  } catch (e) { return []; }
+}
+
+async function markMentionProcessed(tweetId) {
+  try {
+    await pool.query(
+      "INSERT INTO memories (category, content) VALUES ('processed_mention_id', $1) ON CONFLICT DO NOTHING",
+      [tweetId]
+    );
+  } catch (e) {
+    // Fallback without ON CONFLICT
+    try {
+      const { rows } = await pool.query(
+        "SELECT id FROM memories WHERE category = 'processed_mention_id' AND content = $1", [tweetId]
+      );
+      if (rows.length === 0) {
+        await pool.query("INSERT INTO memories (category, content) VALUES ('processed_mention_id', $1)", [tweetId]);
+      }
+    } catch (e2) { console.error('markMentionProcessed error:', e2.message); }
   }
 }
 
