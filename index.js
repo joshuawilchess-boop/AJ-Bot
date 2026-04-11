@@ -251,19 +251,7 @@ async function getAJResponse(chatId, userMessage) {
     getXPostContext()
   ]);
 
-  const [taskContext2, xPostContext2, activeMemories] = await Promise.all([
-    Promise.resolve(taskContext),
-    Promise.resolve(xPostContext),
-    getActiveMemories()
-  ]);
 
-  let system = AJ_SYSTEM +
-    '\n\nCURRENT TASK LIST:\n' + taskContext +
-    '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext;
-
-  if (activeMemories) {
-    system += '\n\nACTIVE MEMORY (things you have saved to remember):\n' + activeMemories;
-  }
 
   history.push({ role: 'user', content: userMessage });
 
@@ -387,6 +375,16 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         return;
       }
       await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [postText, 'manual', 'pending']);
+      // Save to memory so AJ knows what "that draft" refers to
+      try {
+        const memVal = JSON.stringify({ content: postText, postType: 'manual', savedAt: new Date().toISOString() });
+        const existing = await pool.query("SELECT id FROM memories WHERE category = 'last_shown_draft' LIMIT 1");
+        if (existing.rows.length > 0) {
+          await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_shown_draft'", [memVal]);
+        } else {
+          await pool.query("INSERT INTO memories (category, content) VALUES ('last_shown_draft', $1)", [memVal]);
+        }
+      } catch(e) {}
       await bot.sendMessage(chatId, 'X post ready:\n\n' + postText.replace(/[*_`\[\]]/g, '') + '\n\nYES to post · NO to skip');
       return;
     }

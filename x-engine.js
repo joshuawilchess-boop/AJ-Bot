@@ -143,12 +143,25 @@ Context: ${context}`,
 // ── SEND FOR APPROVAL ─────────────────────────────────────
 async function sendForApproval(content, postType) {
   if (!telegramBot || !joshuaChatId) return;
-  await pool.query(
-    'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+  const { rows } = await pool.query(
+    'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3) RETURNING id',
     [content, postType, 'pending']
   );
+  const pendingId = rows[0]?.id;
+
+  // Auto-save to memory the moment a draft is shown — so AJ always knows what "that draft" refers to
+  try {
+    const memVal = JSON.stringify({ id: pendingId, content, postType, savedAt: new Date().toISOString() });
+    const existing = await pool.query("SELECT id FROM memories WHERE category = 'last_shown_draft' LIMIT 1");
+    if (existing.rows.length > 0) {
+      await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_shown_draft'", [memVal]);
+    } else {
+      await pool.query("INSERT INTO memories (category, content) VALUES ('last_shown_draft', $1)", [memVal]);
+    }
+  } catch(e) { console.error('saveMemory error:', e.message); }
+
   const safe = content.replace(/[*_`\[\]]/g, '');
-  await telegramBot.sendMessage(joshuaChatId, 'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip');
+  await telegramBot.sendMessage(joshuaChatId, 'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip · or tell me what to change');
 }
 
 // ── SCHEDULED POSTS ───────────────────────────────────────
