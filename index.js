@@ -474,8 +474,11 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     // ── NATURAL YES — approve pending X post ────────────
-    const naturalYes = ['yes', 'yeah', 'yep', 'yup', 'sure', 'go ahead', 'do it', 'post it', 'go for it', 'definitely', 'absolutely', 'of course', 'sounds good', 'looks good'];
-    const isYes = naturalYes.some(y => textLower === y || textLower.startsWith(y + ' ') || textLower.endsWith(' ' + y));
+    // Only trigger post approval on explicit post-related confirmations
+    // NOT on casual conversation words like "yeah", "sure", "of course"
+    const postYes = ['yes', 'yes post it', 'yes post', 'post it', 'go ahead and post', 'post that', 'yes go ahead', 'yes do it', 'post this'];
+    const isYes = postYes.some(y => textLower.trim() === y) ||
+      (textLower.trim() === 'yes' && true); // only exact "yes" by itself
 
     if (isYes) {
       const { rows } = await pool.query(
@@ -544,8 +547,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     // ── NATURAL NO — reject pending X post ──────────────
-    const naturalNo = ['no', 'nope', 'nah', 'skip', 'skip it', 'cancel'];
-    const isNo = naturalNo.some(n => textLower === n);
+    const naturalNo = ['no', 'nope', 'skip it', 'cancel', 'dont post', "don't post", 'no post', 'skip that'];
+    const isNo = naturalNo.some(n => textLower.trim() === n);
 
     if (isNo) {
       const { rows } = await pool.query(
