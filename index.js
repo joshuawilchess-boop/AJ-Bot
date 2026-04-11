@@ -305,16 +305,19 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
 
-    if (textLower.startsWith('/xpost ')) {
-      const postText = text.replace(/\/xpost /i, '').trim();
-      await bot.sendMessage(chatId, 'Posting to X...');
-      const tweetId = await xEngine.postToX(postText);
-      if (tweetId) {
-        await bot.sendMessage(chatId, 'Posted! https://x.com/AJ_agentic/status/' + tweetId);
+    if (textLower.startsWith('/xpost')) {
+      const postText = text.replace(/\/xpost ?/i, '').trim();
+      // If image is attached with /xpost, route to image handler below
+      if (hasPhoto) {
+        // Fall through to image handler — it will detect /xpost as a post request
       } else {
-        await bot.sendMessage(chatId, 'X error — check Railway logs for details. Make sure X_API_KEY vars are set and app has Read+Write permissions.');
+        if (!postText) { await bot.sendMessage(chatId, 'Usage: /xpost [text] — or send an image with /xpost as caption'); return; }
+        await bot.sendMessage(chatId, 'Drafting post for approval...');
+        const safeText = postText.replace(/[*_`\[\]]/g, '');
+        await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [postText, 'manual', 'pending']);
+        await bot.sendMessage(chatId, 'X post ready:\n\n' + safeText + '\n\nYES to post · NO to skip');
+        return;
       }
-      return;
     }
 
     if (textLower === '/xdelete') {
@@ -475,8 +478,12 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const mediaType = (ext === 'png') ? 'image/png' : 'image/jpeg';
 
         // Check if this is an instruction to post to X with the image
-        const xPostKeywords = ['post this', 'post to x', 'tweet this', 'share this on x', 'post on x', 'use this image', 'post with this'];
-        const isXPostRequest = text && xPostKeywords.some(kw => textLower.includes(kw));
+        const xPostKeywords = [
+          'post this', 'post to x', 'tweet this', 'share this on x', 'post on x',
+          'use this image', 'post with this', 'xpost', '/xpost', 'post it',
+          'put this on x', 'share on x', 'post with image', 'introduce', 'post about'
+        ];
+        const isXPostRequest = (text && xPostKeywords.some(kw => textLower.includes(kw))) || textLower.startsWith('/xpost');
 
         if (isXPostRequest) {
           // Generate post text using the image + instruction as context
@@ -498,8 +505,9 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
           });
           const imgDesc = visionResponse.content[0].text;
 
+          const instruction = text.replace(/^\/xpost ?/i, '').trim() || 'post this image';
           const postContent = await xEngine.generatePost('morning',
-            'Josh wants to post this image. Instruction: "' + text + '". Image shows: ' + imgDesc + '. Write a punchy X post to go with it.'
+            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. Write a sharp punchy X post under 280 chars. Match AJ voice: chill, confident, unbothered.'
           );
 
           // Store image buffer as base64 in pending post for approval
