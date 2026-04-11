@@ -80,6 +80,39 @@ async function saveMessage(chatId, role, content) {
   );
 }
 
+// ── ACTIVE MEMORY ────────────────────────────────────────
+async function saveMemory(key, value) {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id FROM memories WHERE category = $1 LIMIT 1", [key]
+    );
+    if (rows.length > 0) {
+      await pool.query("UPDATE memories SET content = $1 WHERE category = $2", [value, key]);
+    } else {
+      await pool.query("INSERT INTO memories (category, content) VALUES ($1, $2)", [key, value]);
+    }
+  } catch (e) { console.error('saveMemory error:', e.message); }
+}
+
+async function getMemory(key) {
+  try {
+    const { rows } = await pool.query(
+      "SELECT content FROM memories WHERE category = $1 LIMIT 1", [key]
+    );
+    return rows.length > 0 ? rows[0].content : null;
+  } catch (e) { return null; }
+}
+
+async function getActiveMemories() {
+  try {
+    const { rows } = await pool.query(
+      "SELECT category, content FROM memories WHERE category NOT IN ('last_mention_id', 'last_mention_hash') AND category NOT LIKE 'processed_mention_%' ORDER BY created_at DESC LIMIT 20"
+    );
+    if (rows.length === 0) return '';
+    return rows.map(r => r.category + ': ' + r.content).join('\n');
+  } catch (e) { return ''; }
+}
+
 // ── X POST CONTEXT ────────────────────────────────────────
 async function getXPostContext() {
   try {
@@ -199,7 +232,16 @@ PROACTIVE X SUGGESTIONS:
 Suggest post ideas when relevant. If Josh mentions something interesting, say:
 - "That's a solid X post — want me to draft it?"
 - "Been thinking about posting [topic] — something like [example]. Good?"
-When Josh approves, you handle everything: generate, queue, post, send the link.`;
+When Josh approves, you handle everything: generate, queue, post, send the link.
+
+YOUR MEMORY SYSTEM:
+You have an active memory that persists across sessions. It's loaded into every conversation.
+- When you start working on something important (a draft, a plan, a strategy), remember it
+- If Josh sends you an image, the image context is saved to memory automatically so you can reference it later even if you can't see it again
+- Use /remember to let Josh save notes directly
+- When Josh references something from a past conversation, check your active memory first
+- Never say you "can't remember" or "lost context" — check active memory before giving up
+- If you're working on an X post draft with an image, save the draft text and image description to your WIP memory`;
 
 // ── AI RESPONSE ───────────────────────────────────────────
 async function getAJResponse(chatId, userMessage) {
@@ -209,9 +251,19 @@ async function getAJResponse(chatId, userMessage) {
     getXPostContext()
   ]);
 
-  const system = AJ_SYSTEM +
+  const [taskContext2, xPostContext2, activeMemories] = await Promise.all([
+    Promise.resolve(taskContext),
+    Promise.resolve(xPostContext),
+    getActiveMemories()
+  ]);
+
+  let system = AJ_SYSTEM +
     '\n\nCURRENT TASK LIST:\n' + taskContext +
-    '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic) — full history, pending drafts, and last rejected post are all listed below. Use this to stay consistent, avoid repeating yourself, and understand what Josh liked or rejected:\n' + xPostContext;
+    '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext;
+
+  if (activeMemories) {
+    system += '\n\nACTIVE MEMORY (things you have saved to remember):\n' + activeMemories;
+  }
 
   history.push({ role: 'user', content: userMessage });
 
@@ -225,6 +277,15 @@ async function getAJResponse(chatId, userMessage) {
   const reply = response.content[0].text;
   await saveMessage(chatId, 'user', userMessage);
   await saveMessage(chatId, 'assistant', reply);
+
+  // Auto-save work-in-progress to memory if AJ is working on something specific
+  const wipKeywords = ['working on', 'drafting', 'let me write', 'here is the post', 'here is a draft', 'want me to post', 'should i post', 'ready to post', 'waiting for your', 'pending your approval'];
+  const isWIP = wipKeywords.some(kw => reply.toLowerCase().includes(kw));
+  if (isWIP) {
+    const shortSummary = userMessage.substring(0, 100) + ' → ' + reply.substring(0, 150);
+    await saveMemory('wip_context', shortSummary);
+  }
+
   return reply;
 }
 
@@ -300,7 +361,21 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     if (text === '/clear') {
       await pool.query('DELETE FROM conversations WHERE chat_id = $1', [chatId]);
-      await bot.sendMessage(chatId, 'Memory cleared. Fresh start.');
+      await bot.sendMessage(chatId, 'Conversation cleared. Fresh start.');
+      return;
+    }
+
+    if (textLower.startsWith('/remember ')) {
+      const note = text.replace(/^\/remember /i, '').trim();
+      const key = 'note_' + Date.now();
+      await pool.query("INSERT INTO memories (category, content) VALUES ($1, $2)", [key, note]);
+      await bot.sendMessage(chatId, 'Got it — saved to memory: ' + note);
+      return;
+    }
+
+    if (textLower === '/memory') {
+      const mems = await getActiveMemories();
+      await bot.sendMessage(chatId, mems ? 'Active memory:\n\n' + mems : 'Nothing saved to memory yet.');
       return;
     }
 
@@ -508,54 +583,68 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const mediaType = ext === 'png' ? 'image/png' : 'image/jpeg';
         const base64Image = imageBuffer.toString('base64');
 
-        // Detect X post request
+        // Step 1: Always silently analyze the image — extract text and description
+        const silentAnalysis = await client.messages.create({
+          model: 'claude-opus-4-6',
+          max_tokens: 800,
+          system: 'You are analyzing an image sent by Josh. Extract ALL text visible in the image verbatim. Then provide a brief description of what the image shows. Format your response as:\nTEXT: [all visible text, or "none" if no text]\nDESCRIPTION: [brief description of what the image shows]',
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
+            { type: 'text', text: 'Extract all text and describe this image.' }
+          ]}]
+        });
+
+        const analysisText = silentAnalysis.content[0].text;
+        const textMatch = analysisText.match(/TEXT:\s*([\s\S]*?)(?=\nDESCRIPTION:|$)/i);
+        const descMatch = analysisText.match(/DESCRIPTION:\s*([\s\S]*?)$/i);
+        const extractedText = textMatch?.[1]?.trim() || '';
+        const imgDescription = descMatch?.[1]?.trim() || analysisText;
+
+        // Save image context to memory so AJ remembers it
+        const imgMemory = 'Josh sent an image. ' + (extractedText && extractedText.toLowerCase() !== 'none' ? 'Text in image: ' + extractedText.substring(0, 300) + '. ' : '') + 'Image shows: ' + imgDescription.substring(0, 200);
+        await saveMemory('last_image_context', imgMemory);
+
+        // Step 2: Detect X post request
         const xPostKeywords = ['post this', 'post to x', 'tweet this', 'share this on x', 'post on x', 'use this image', 'post with this', 'xpost', '/xpost', 'post it', 'put this on x', 'share on x', 'introduce', 'post about'];
         const isXPostRequest = textLower.startsWith('/xpost') || xPostKeywords.some(kw => textLower.includes(kw));
 
         if (isXPostRequest) {
-          // Understand the image first
-          const visionResponse = await client.messages.create({
-            model: 'claude-opus-4-6',
-            max_tokens: 300,
-            system: 'Describe what this image shows in 1-2 sentences for writing an X post about it.',
-            messages: [{ role: 'user', content: [
-              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-              { type: 'text', text: 'Brief description of this image.' }
-            ]}]
-          });
-          const imgDesc = visionResponse.content[0].text;
           const instruction = text.replace(/^\/xpost ?/i, '').trim() || 'post this image';
-
           const postContent = await xEngine.generatePost('morning',
-            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. Write in AJ voice: chill, sharp, unbothered. No hashtags.'
+            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDescription + '. Write in AJ voice: chill, sharp, unbothered. No hashtags.'
           );
-
           const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });
           await pool.query(
             'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
             [postContent, 'image_post::' + imgData, 'pending']
           );
-
           const safePost = postContent.replace(/[*_`\[\]]/g, '');
           await bot.sendMessage(chatId, 'X post with image ready:\n\n' + safePost + '\n\nYES to post · NO to skip · or tell me to change it');
           return;
         }
 
-        // Regular image analysis
-        const taskCtx = await getTaskContext();
-        const visionResponse = await client.messages.create({
-          model: 'claude-opus-4-6',
-          max_tokens: 1500,
-          system: 'You are AJ, Josh\'s personal AI business agent with full vision. Analyze whatever Josh sends — screenshots, dashboards, documents, photos. Be direct, sharp, give actionable insights. Active tasks: ' + taskCtx,
-          messages: [{ role: 'user', content: [
-            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-            { type: 'text', text: text || 'What do you see? Full analysis.' }
-          ]}]
-        });
-        await bot.sendMessage(chatId, visionResponse.content[0].text, { parse_mode: 'Markdown' });
+        // Step 3: Build full context including image content for AJ's response
+        const imageContext = (extractedText && extractedText.toLowerCase() !== 'none')
+          ? 'Image content — text visible: ' + extractedText + '\nImage description: ' + imgDescription
+          : 'Image description: ' + imgDescription;
+
+        const userPrompt = text
+          ? text + '\n\n[Image context: ' + imageContext + ']'
+          : '[Image context: ' + imageContext + ']';
+
+        // Step 4: Only send a Telegram reply if Josh asked something or the image clearly needs a response
+        const hasQuestion = text && text.trim().length > 0;
+        const needsResponse = hasQuestion || extractedText.length > 20;
+
+        if (needsResponse) {
+          const reply = await getAJResponse(chatId, userPrompt);
+          await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+        }
+        // If no caption and no text — silent analysis, just save to memory, no reply
+
       } catch (e) {
         console.error('Image handler error:', e.message);
-        await bot.sendMessage(chatId, 'Hit a snag analyzing that — try again.');
+        await bot.sendMessage(chatId, 'Hit a snag with that image — try again.');
       }
       return;
     }
