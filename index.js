@@ -438,8 +438,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     if (textLower === '/xmentions') {
-      await bot.sendMessage(chatId, '🔔 Checking for mentions of @AJ_agentic...');
-      await xEngine.checkMentions();
+      await bot.sendMessage(chatId, 'Checking for mentions of @AJ_agentic...');
+      await xEngine.checkMentions(true);
       return;
     }
 
@@ -507,8 +507,11 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
           const instruction = text.replace(/^\/xpost ?/i, '').trim() || 'post this image';
           const postContent = await xEngine.generatePost('morning',
-            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. Write a sharp punchy X post under 280 chars. Match AJ voice: chill, confident, unbothered.'
+            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. CRITICAL: X has a 280 character limit. Write ONE punchy tweet under 260 chars. No threads. Short, sharp, AJ voice: chill, confident, unbothered. Count the characters — it must fit in a single tweet.'
           );
+
+          // Hard enforce 280 char limit
+          const trimmedPost = postContent.length > 270 ? postContent.substring(0, 267) + '...' : postContent;
 
           // Store image buffer as base64 in pending post for approval
           const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });

@@ -133,7 +133,10 @@ Context: ${context}`,
     max_tokens: 300,
     messages: [{ role: 'user', content: prompts[type] || prompts.morning }]
   });
-  return response.content[0].text.trim().replace(/^["']|["']$/g, '');
+  let postText = response.content[0].text.trim().replace(/^["']|["']$/g, '');
+  // Hard enforce X's 280 char limit
+  if (postText.length > 280) postText = postText.substring(0, 277) + '...';
+  return postText;
 }
 
 // ── SEND FOR APPROVAL ─────────────────────────────────────
@@ -211,7 +214,7 @@ async function postThread(tweets) {
 }
 
 // ── MENTION MONITOR (X API recent search) ────────────────
-async function checkMentions() {
+async function checkMentions(manual = false) {
   if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
   try {
     console.log('Searching for @AJ_agentic mentions via X API...');
@@ -238,7 +241,7 @@ async function checkMentions() {
 
     if (tweets.length === 0) {
       console.log('No new mentions found.');
-      await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
+      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
@@ -328,7 +331,8 @@ async function checkMentions() {
     }
 
     if (newCount === 0) {
-      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
+      console.log('No new unprocessed mentions found.');
+      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
