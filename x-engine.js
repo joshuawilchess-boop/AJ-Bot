@@ -74,7 +74,13 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
       accessSecret: process.env.X_ACCESS_SECRET,
     });
 
-    const params = { text: content };
+    // Strip accidental @mentions from standalone posts
+    let cleanContent = content;
+    if (!replyToId) {
+      cleanContent = content.replace(/@[A-Za-z0-9_]+/g, '').replace(/\s+/g, ' ').trim();
+      if (cleanContent.length < 10) cleanContent = content;
+    }
+    const params = { text: cleanContent };
     if (replyToId) params.reply = { in_reply_to_tweet_id: replyToId };
 
     // Upload image if provided

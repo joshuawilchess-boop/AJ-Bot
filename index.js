@@ -463,8 +463,14 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         ['pending']
       );
       if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts to skip.'); return; }
-      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['rejected', rows[0].id]);
-      await bot.sendMessage(chatId, 'Skipped. Want me to write a different version? Just say what vibe you want.');
+      const rejectedPost = rows[0];
+      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['rejected', rejectedPost.id]);
+      // Store context of what was rejected so next message can regenerate correctly
+      try {
+        await pool.query("DELETE FROM memories WHERE category = 'last_rejected_post'");
+        await pool.query("INSERT INTO memories (category, content) VALUES ('last_rejected_post', $1)", [rejectedPost.content]);
+      } catch(e) {}
+      await bot.sendMessage(chatId, 'Skipped. What vibe do you want instead?');
       return;
     }
 
