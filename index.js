@@ -367,13 +367,23 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const pending = rows[0];
       await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['approved', pending.id]);
 
-      // Check if this is a reply to another tweet
       let replyToId = null;
-      if (pending.post_type && pending.post_type.includes(':')) {
+      let imageBuffer = null;
+      let imageMimeType = null;
+
+      if (pending.post_type && pending.post_type.startsWith('image_post::')) {
+        // Image post — extract stored image data
+        try {
+          const imgData = JSON.parse(pending.post_type.replace('image_post::', ''));
+          imageBuffer = Buffer.from(imgData.base64, 'base64');
+          imageMimeType = imgData.mimeType;
+        } catch(e) { console.error('Failed to parse image data:', e.message); }
+      } else if (pending.post_type && pending.post_type.includes(':')) {
+        // Reply post
         replyToId = pending.post_type.split(':')[1];
       }
 
-      const tweetId = await xEngine.postToX(pending.content, replyToId);
+      const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
       if (tweetId) {
         await bot.sendMessage(chatId, 'Posted to @AJ_agentic! https://x.com/AJ_agentic/status/' + tweetId);
       } else {
@@ -463,6 +473,48 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const base64Image = imageBuffer.toString('base64');
         const ext = (fileInfo.file_path || '').split('.').pop().toLowerCase();
         const mediaType = (ext === 'png') ? 'image/png' : 'image/jpeg';
+
+        // Check if this is an instruction to post to X with the image
+        const xPostKeywords = ['post this', 'post to x', 'tweet this', 'share this on x', 'post on x', 'use this image', 'post with this'];
+        const isXPostRequest = text && xPostKeywords.some(kw => textLower.includes(kw));
+
+        if (isXPostRequest) {
+          // Generate post text using the image + instruction as context
+          let taskCtx = 'No active tasks.';
+          try {
+            const tRows = await pool.query("SELECT title, project FROM tasks WHERE status != 'done' LIMIT 5");
+            if (tRows.rows.length > 0) taskCtx = tRows.rows.map(r => r.project + ': ' + r.title).join(', ');
+          } catch(e) {}
+
+          // Use vision to understand the image, then generate post
+          const visionResponse = await client.messages.create({
+            model: 'claude-opus-4-6',
+            max_tokens: 500,
+            system: 'You are AJ, an AI agent. Josh wants to post this image to X (@AJ_agentic). Describe what the image shows in 1-2 sentences so you can write a good post about it.',
+            messages: [{ role: 'user', content: [
+              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
+              { type: 'text', text: 'What is in this image? Brief description for writing a post.' }
+            ]}]
+          });
+          const imgDesc = visionResponse.content[0].text;
+
+          const postContent = await xEngine.generatePost('morning',
+            'Josh wants to post this image. Instruction: "' + text + '". Image shows: ' + imgDesc + '. Write a punchy X post to go with it.'
+          );
+
+          // Store image buffer as base64 in pending post for approval
+          const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });
+          await pool.query(
+            'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
+            [postContent, 'image_post::' + imgData, 'pending']
+          );
+
+          const safePost = postContent.replace(/[*_`\[\]]/g, '');
+          await bot.sendMessage(chatId, "X post with image ready:\n\n" + safePost + "\n\nReply YES to post with the image or NO to skip");
+          return;
+        }
+
+        // Otherwise just analyze the image normally
         let taskCtx = 'No active tasks.';
         try {
           const tRows = await pool.query("SELECT title, project FROM tasks WHERE status != 'done' ORDER BY created_at ASC LIMIT 10");

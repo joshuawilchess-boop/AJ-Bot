@@ -64,7 +64,7 @@ async function webSearch(query, returnSummary = false) {
 }
 
 // ── POST TO X ─────────────────────────────────────────────
-async function postToX(content, replyToId = null) {
+async function postToX(content, replyToId = null, imageBuffer = null, imageMimeType = null) {
   try {
     const { TwitterApi } = require('twitter-api-v2');
     const tw = new TwitterApi({
@@ -73,8 +73,22 @@ async function postToX(content, replyToId = null) {
       accessToken: process.env.X_ACCESS_TOKEN,
       accessSecret: process.env.X_ACCESS_SECRET,
     });
+
     const params = { text: content };
     if (replyToId) params.reply = { in_reply_to_tweet_id: replyToId };
+
+    // Upload image if provided
+    if (imageBuffer) {
+      try {
+        const mediaId = await tw.v1.uploadMedia(imageBuffer, { mimeType: imageMimeType || 'image/jpeg' });
+        params.media = { media_ids: [mediaId] };
+        console.log('Image uploaded to X, media_id:', mediaId);
+      } catch (imgErr) {
+        console.error('Image upload error:', imgErr.message);
+        // Post without image if upload fails
+      }
+    }
+
     const result = await tw.v2.tweet(params);
     const tweetId = result.data.id;
     await pool.query(
@@ -87,6 +101,11 @@ async function postToX(content, replyToId = null) {
     console.error('postToX error:', e.message);
     return null;
   }
+}
+
+// ── UPLOAD IMAGE TO X AND POST ────────────────────────────
+async function postToXWithImage(content, imageBuffer, imageMimeType) {
+  return postToX(content, null, imageBuffer, imageMimeType);
 }
 
 // ── GENERATE POST CONTENT ─────────────────────────────────
@@ -432,6 +451,7 @@ function startSchedules() {
 }
 
 module.exports = {
+  postToXWithImage,
   setTelegramBot,
   initXDB,
   postToX,
