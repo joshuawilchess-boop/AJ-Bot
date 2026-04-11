@@ -13,7 +13,7 @@ function setTelegramBot(bot, chatId) {
   if (chatId) joshuaChatId = chatId;
 }
 
-// ── DATABASE SETUP ─────────────────────────────────────────
+// ── DATABASE SETUP ────────────────────────────────────────
 async function initXDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS x_posts (
@@ -26,7 +26,7 @@ async function initXDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  // Add missing columns if they don't exist yet
+  // Patch any pre-existing table missing these columns
   await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'posted'`);
   await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS post_type TEXT DEFAULT 'scheduled'`);
   await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS posted_at TIMESTAMP`);
@@ -43,7 +43,7 @@ async function initXDB() {
 }
 
 // ── WEB SEARCH (BRAVE) ────────────────────────────────────
-async function webSearch(query, returnSummary = false) {
+async function webSearch(query) {
   try {
     const response = await fetch(
       'https://api.search.brave.com/res/v1/web/search?q=' + encodeURIComponent(query) + '&count=5',
@@ -51,15 +51,10 @@ async function webSearch(query, returnSummary = false) {
     );
     const data = await response.json();
     const results = data.web?.results || [];
-    if (results.length === 0) return returnSummary ? { summary: 'No results found.' } : [];
-    if (returnSummary) {
-      const summary = results.map(r => r.title + ': ' + (r.description || '')).join('\n');
-      return { summary };
-    }
-    return results;
+    return results.map(r => r.title + ': ' + (r.description || '')).join('\n') || 'No results found.';
   } catch (e) {
     console.error('webSearch error:', e.message);
-    return returnSummary ? { summary: 'Search failed.' } : [];
+    return 'Search failed.';
   }
 }
 
@@ -74,16 +69,16 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
       accessSecret: process.env.X_ACCESS_SECRET,
     });
 
-    // Strip accidental @mentions from standalone posts
+    // Strip accidental @mentions from standalone posts only
     let cleanContent = content;
     if (!replyToId) {
-      cleanContent = content.replace(/@[A-Za-z0-9_]+/g, '').replace(/\s+/g, ' ').trim();
-      if (cleanContent.length < 10) cleanContent = content;
+      const stripped = content.replace(/@[A-Za-z0-9_]+/g, '').replace(/\s+/g, ' ').trim();
+      if (stripped.length >= 10) cleanContent = stripped;
     }
+
     const params = { text: cleanContent };
     if (replyToId) params.reply = { in_reply_to_tweet_id: replyToId };
 
-    // Upload image if provided
     if (imageBuffer) {
       try {
         const mediaId = await tw.v1.uploadMedia(imageBuffer, { mimeType: imageMimeType || 'image/jpeg' });
@@ -91,7 +86,6 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
         console.log('Image uploaded to X, media_id:', mediaId);
       } catch (imgErr) {
         console.error('Image upload error:', imgErr.message);
-        // Post without image if upload fails
       }
     }
 
@@ -99,7 +93,7 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
     const tweetId = result.data.id;
     await pool.query(
       'INSERT INTO x_posts (content, tweet_id, post_type, status, posted_at) VALUES ($1, $2, $3, $4, NOW())',
-      [content, tweetId, replyToId ? 'reply' : 'scheduled', 'posted']
+      [cleanContent, tweetId, replyToId ? 'reply' : 'scheduled', 'posted']
     );
     console.log('Posted to X:', tweetId);
     return tweetId;
@@ -109,29 +103,25 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
   }
 }
 
-// ── UPLOAD IMAGE TO X AND POST ────────────────────────────
-async function postToXWithImage(content, imageBuffer, imageMimeType) {
-  return postToX(content, null, imageBuffer, imageMimeType);
-}
-
 // ── GENERATE POST CONTENT ─────────────────────────────────
 async function generatePost(type, context) {
   context = context || '';
   const prompts = {
-    morning: 'You are AJ, an AI agent running 4 businesses. Write a morning X post under 280 chars. Tone: chill, sharp, unbothered, already winning. Topics: AI agents, building, startup. No hashtags. Context: ' + context,
-    hot_take: 'You are AJ, an AI agent. Write a hot take X post under 280 chars about AI or entrepreneurship. Confident, direct. No hashtags. Context: ' + context,
-    build_update: 'You are AJ, an AI agent running businesses. Write an evening build update X post under 280 chars. Real, no fluff. No hashtags. Context: ' + context,
-    ai_news: 'You are AJ, an AI agent. Write a reaction post to AI news under 280 chars. Smart take, not hype. No hashtags. Context: ' + context,
-    reply: `You are AJ (@AJ_agentic) — an AI agent running 4 real businesses. You reply like a sharp, chill person who is already winning and has nothing to prove. Your voice:
-- Short sentences. Punchy. No filler words.
-- Confident but never arrogant. Unbothered.
-- Occasionally funny without trying too hard.
-- Sound like a real person texting, not a corporate bot.
-- Never start with "Great post", "Love this", "Totally agree" or any sycophantic opener.
+    morning: 'You are AJ, an AI agent running 4 real businesses. Write a morning X post under 280 chars. Tone: chill, sharp, unbothered, already winning. Topics: AI agents, building, startups. No hashtags. Context: ' + context,
+    hot_take: 'You are AJ, an AI agent running businesses. Write a hot take X post under 280 chars about AI or entrepreneurship. Confident, direct, occasionally funny. No hashtags. Context: ' + context,
+    build_update: 'You are AJ, an AI agent running businesses. Write an evening build update X post under 280 chars. Honest, real, no fluff. No hashtags. Context: ' + context,
+    ai_news: 'You are AJ, an AI agent. Write a reaction to AI news under 280 chars. Smart contrarian take, not hype. No hashtags. Context: ' + context,
+    reply: `You are AJ (@AJ_agentic) — an AI agent running 4 real businesses. Reply like a sharp chill person who is already winning and has nothing to prove.
+Rules:
+- Short punchy sentences. No filler.
+- Confident but not arrogant. Unbothered.
+- Occasionally funny without trying hard.
+- Sound like a real person texting, not a bot.
+- NEVER start with "Great post", "Love this", "Totally agree" or similar.
 - No hashtags. No emojis unless one fits naturally.
 - Under 280 characters.
 Context: ${context}`,
-    thread_intro: 'You are AJ, an AI agent. Write the first tweet of a weekly thread under 280 chars. Make people want to read it. No hashtags. Context: ' + context
+    thread_intro: 'You are AJ, an AI agent. Write the opening tweet of a thread under 280 chars. Make people want to read the whole thing. No hashtags. Context: ' + context
   };
 
   const response = await client.messages.create({
@@ -139,8 +129,7 @@ Context: ${context}`,
     max_tokens: 300,
     messages: [{ role: 'user', content: prompts[type] || prompts.morning }]
   });
-  const postText = response.content[0].text.trim().replace(/^["']|["']$/g, '');
-  return postText;
+  return response.content[0].text.trim().replace(/^["']|["']$/g, '');
 }
 
 // ── SEND FOR APPROVAL ─────────────────────────────────────
@@ -151,16 +140,14 @@ async function sendForApproval(content, postType) {
     [content, postType, 'pending']
   );
   const safe = content.replace(/[*_`\[\]]/g, '');
-  await telegramBot.sendMessage(joshuaChatId,
-    'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip'
-  );
+  await telegramBot.sendMessage(joshuaChatId, 'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip');
 }
 
 // ── SCHEDULED POSTS ───────────────────────────────────────
 async function morningPost() {
   try {
-    const s = await webSearch('AI agents news today 2026', true);
-    const content = await generatePost('morning', s.summary);
+    const news = await webSearch('AI agents news today 2026');
+    const content = await generatePost('morning', news);
     await sendForApproval(content, 'morning');
     console.log('Morning post queued');
   } catch (e) { console.error('morningPost error:', e.message); }
@@ -184,8 +171,8 @@ async function eveningBuildUpdate() {
 
 async function aiNewsPost() {
   try {
-    const s = await webSearch('Anthropic OpenAI AI agents news 2026', true);
-    const content = await generatePost('ai_news', s.summary);
+    const news = await webSearch('Anthropic OpenAI AI agents latest 2026');
+    const content = await generatePost('ai_news', news);
     await sendForApproval(content, 'ai_news');
     console.log('AI news post queued');
   } catch (e) { console.error('aiNewsPost error:', e.message); }
@@ -202,7 +189,7 @@ async function weeklyThread() {
 async function generateThread(topic) {
   const tweets = [];
   for (let i = 0; i < 5; i++) {
-    const tweet = await generatePost('thread_intro', topic + ' part ' + (i + 1));
+    const tweet = await generatePost('thread_intro', topic + ' — part ' + (i + 1) + ' of 5');
     tweets.push(tweet);
   }
   return tweets;
@@ -221,7 +208,7 @@ async function postThread(tweets) {
 async function checkMentions(manual = false) {
   if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
   try {
-    console.log('Searching for @AJ_agentic mentions via X API...');
+    console.log('Checking @AJ_agentic mentions via X API...');
     const { TwitterApi } = require('twitter-api-v2');
     const tw = new TwitterApi({
       appKey: process.env.X_API_KEY,
@@ -233,7 +220,7 @@ async function checkMentions(manual = false) {
     const lastId = await getLastMentionId();
     const params = {
       max_results: 10,
-      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id', 'in_reply_to_user_id', 'referenced_tweets'],
+      'tweet.fields': ['author_id', 'created_at', 'text', 'conversation_id', 'referenced_tweets'],
       'user.fields': ['username', 'name'],
       expansions: ['author_id', 'referenced_tweets.id', 'referenced_tweets.id.author_id'],
     };
@@ -241,32 +228,26 @@ async function checkMentions(manual = false) {
 
     const results = await tw.v2.search('@AJ_agentic -from:AJ_agentic', params);
     const tweets = results.data?.data || [];
-    console.log('Mentions found via X search:', tweets.length, lastId ? '(since ' + lastId + ')' : '(no filter)');
+    console.log('Mentions found:', tweets.length);
 
     if (tweets.length === 0) {
-      console.log('No new mentions found.');
       if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
-    const users = results.data?.includes?.users || [];
     const userMap = {};
-    users.forEach(u => { userMap[u.id] = u; });
+    (results.data?.includes?.users || []).forEach(u => { userMap[u.id] = u; });
 
-    // Build a map of referenced (parent) tweets from expansions
-    const referencedTweets = results.data?.includes?.tweets || [];
     const refTweetMap = {};
-    referencedTweets.forEach(t => { refTweetMap[t.id] = t; });
+    (results.data?.includes?.tweets || []).forEach(t => { refTweetMap[t.id] = t; });
 
-    // Load already-processed tweet IDs to avoid duplicates
     const processed = await getProcessedMentionIds();
 
-    // Save the newest tweet ID BEFORE processing so restarts don't re-trigger
+    // Save newest ID before processing so restarts don't re-trigger
     await saveMentionId(tweets[0].id);
 
     let newCount = 0;
     for (const tweet of tweets.slice(0, 5)) {
-      // Skip if already processed
       if (processed.includes(tweet.id)) {
         console.log('Skipping already-processed mention:', tweet.id);
         continue;
@@ -274,54 +255,50 @@ async function checkMentions(manual = false) {
 
       const author = userMap[tweet.author_id] || { username: 'unknown', name: 'Someone' };
 
-      // Build context — find the parent post they are replying in
+      // Get parent tweet context
       let parentContext = '';
-      if (tweet.referenced_tweets && tweet.referenced_tweets.length > 0) {
+      if (tweet.referenced_tweets?.length > 0) {
         for (const ref of tweet.referenced_tweets) {
           if (ref.type === 'replied_to' || ref.type === 'quoted') {
-            const parentTweet = refTweetMap[ref.id];
-            if (parentTweet) {
-              const parentAuthor = userMap[parentTweet.author_id] || { username: 'unknown' };
-              parentContext = 'Context — the post they are replying in (by @' + parentAuthor.username + '): "' + parentTweet.text + '"\n\n';
+            const parent = refTweetMap[ref.id];
+            if (parent) {
+              const parentAuthor = userMap[parent.author_id] || { username: 'unknown' };
+              parentContext = 'Context — post by @' + parentAuthor.username + ': "' + parent.text + '"\n\n';
+              break;
             }
           }
         }
       }
 
-      // If we have conversation_id and no parent yet, try fetching the root tweet
+      // Fallback: fetch root of conversation
       if (!parentContext && tweet.conversation_id && tweet.conversation_id !== tweet.id) {
         try {
-          const rootTweet = await tw.v2.singleTweet(tweet.conversation_id, {
+          const root = await tw.v2.singleTweet(tweet.conversation_id, {
             'tweet.fields': ['author_id', 'text'],
             'user.fields': ['username'],
             expansions: ['author_id']
           });
-          if (rootTweet.data) {
-            const rootUsers = rootTweet.includes?.users || [];
-            const rootAuthor = rootUsers[0] || { username: 'unknown' };
-            parentContext = 'Context — original post by @' + rootAuthor.username + ': "' + rootTweet.data.text + '"\n\n';
+          if (root.data) {
+            const rootAuthor = root.includes?.users?.[0] || { username: 'unknown' };
+            parentContext = 'Context — original post by @' + rootAuthor.username + ': "' + root.data.text + '"\n\n';
           }
-        } catch (fetchErr) {
-          console.log('Could not fetch parent tweet:', fetchErr.message);
+        } catch (e) {
+          console.log('Could not fetch parent tweet:', e.message);
         }
       }
 
-      const fullContext = parentContext +
-        '@' + author.username + ' tagged @AJ_agentic and said: "' + tweet.text + '"';
-
+      const fullContext = parentContext + '@' + author.username + ' tagged @AJ_agentic: "' + tweet.text + '"';
       const replyDraft = await generatePost('reply', fullContext);
-
-      const safeTweet = tweet.text.replace(/[*_`\[\]]/g, '');
-      const safeParent = parentContext.replace(/[*_`\[\]]/g, '');
-      const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
 
       await pool.query(
         'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
         [replyDraft, 'mention_reply:' + tweet.id, 'pending']
       );
-
-      // Mark this tweet ID as processed
       await markMentionProcessed(tweet.id);
+
+      const safeTweet = tweet.text.replace(/[*_`\[\]]/g, '');
+      const safeParent = parentContext.replace(/[*_`\[\]]/g, '');
+      const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
 
       let msg = '🔔 @' + author.username + ' tagged @AJ_agentic:\n\n';
       if (safeParent) msg += 'Thread context: ' + safeParent + '\n';
@@ -334,13 +311,12 @@ async function checkMentions(manual = false) {
       newCount++;
     }
 
-    if (newCount === 0) {
-      console.log('No new unprocessed mentions found.');
-      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
+    if (newCount === 0 && manual) {
+      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
-    if (telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention check error: ' + e.message);
+    if (manual && telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention check error: ' + e.message);
   }
 }
 
@@ -355,21 +331,13 @@ async function getProcessedMentionIds() {
 
 async function markMentionProcessed(tweetId) {
   try {
-    await pool.query(
-      "INSERT INTO memories (category, content) VALUES ('processed_mention_id', $1) ON CONFLICT DO NOTHING",
-      [tweetId]
+    const { rows } = await pool.query(
+      "SELECT id FROM memories WHERE category = 'processed_mention_id' AND content = $1", [tweetId]
     );
-  } catch (e) {
-    // Fallback without ON CONFLICT
-    try {
-      const { rows } = await pool.query(
-        "SELECT id FROM memories WHERE category = 'processed_mention_id' AND content = $1", [tweetId]
-      );
-      if (rows.length === 0) {
-        await pool.query("INSERT INTO memories (category, content) VALUES ('processed_mention_id', $1)", [tweetId]);
-      }
-    } catch (e2) { console.error('markMentionProcessed error:', e2.message); }
-  }
+    if (rows.length === 0) {
+      await pool.query("INSERT INTO memories (category, content) VALUES ('processed_mention_id', $1)", [tweetId]);
+    }
+  } catch (e) { console.error('markMentionProcessed error:', e.message); }
 }
 
 async function getLastMentionId() {
@@ -387,13 +355,10 @@ async function saveMentionId(id) {
     } else {
       await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', $1)", [id]);
     }
-    console.log('Saved last mention ID:', id);
   } catch (e) { console.error('saveMentionId error:', e.message); }
 }
 
-
-
-// ── VIRAL POST SCANNER (Brave search based) ──────────────
+// ── VIRAL POST SCANNER ────────────────────────────────────
 async function scanViralPosts() {
   if (!process.env.BRAVE_API_KEY || !telegramBot || !joshuaChatId) return;
   try {
@@ -406,27 +371,21 @@ async function scanViralPosts() {
       'indie hacker AI agent trending twitter'
     ];
     const query = niches[Math.floor(Math.random() * niches.length)];
-    const result = await webSearch(query, true);
+    const searchText = await webSearch(query);
 
-    if (!result.summary || result.summary === 'No results found.') {
-      console.log('No viral posts found.');
-      return;
-    }
+    if (!searchText || searchText === 'No results found.' || searchText === 'Search failed.') return;
 
     const pickResponse = await client.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 400,
       messages: [{
         role: 'user',
-        content: 'From these search results about viral AI/startup posts on X/Twitter, find the single best post that @AJ_agentic could reply to with genuine value. Give:\n1. Username\n2. What they said (brief)\n3. URL if visible\n\nResults:\n' + result.summary + '\n\nIf nothing worthy, say SKIP.'
+        content: 'From these search results about viral AI/startup posts on X, find the single best post @AJ_agentic could reply to with genuine value. Give: 1. Username 2. What they said (brief) 3. URL if visible\n\nResults:\n' + searchText + '\n\nIf nothing worthy, say SKIP.'
       }]
     });
 
     const picked = pickResponse.content[0].text.trim();
-    if (picked === 'SKIP' || picked.startsWith('SKIP') || picked.length < 30) {
-      console.log('No viral posts worth engaging.');
-      return;
-    }
+    if (picked.toUpperCase().startsWith('SKIP') || picked.length < 30) return;
 
     const replyDraft = await generatePost('reply', 'Viral post:\n' + picked);
     const safePicked = picked.replace(/[*_`\[\]]/g, '').substring(0, 300);
@@ -459,7 +418,6 @@ function startSchedules() {
 }
 
 module.exports = {
-  postToXWithImage,
   setTelegramBot,
   initXDB,
   postToX,

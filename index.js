@@ -6,7 +6,6 @@ const { Pool } = require('pg');
 const cron = require('node-cron');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const JOSH_CHAT_ID = process.env.JOSH_CHAT_ID;
@@ -14,14 +13,11 @@ const JOSH_CHAT_ID = process.env.JOSH_CHAT_ID;
 const app = express();
 app.use(express.json());
 
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const bot = new TelegramBot(TELEGRAM_TOKEN);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
-
+// ── DATABASE ──────────────────────────────────────────────
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS tasks (
@@ -50,11 +46,11 @@ async function initDB() {
     );
   `);
 
-  const { rows } = await pool.query("SELECT COUNT(*) FROM projects");
+  const { rows } = await pool.query('SELECT COUNT(*) FROM projects');
   if (parseInt(rows[0].count) === 0) {
     await pool.query(`
       INSERT INTO projects (name, description) VALUES
-      ('Overflow Revive', 'Recovery system business'),
+      ('Overflow Revive', 'AI revenue recovery SaaS dashboard'),
       ('Coinbot Hunter', 'Solana memecoin tracking dashboard v16'),
       ('RIGOR', 'Forensic rug-detection AI agent for X/Twitter'),
       ('Lead Gen', 'B2B and ecommerce lead generation service')
@@ -63,10 +59,10 @@ async function initDB() {
   console.log('Database ready');
 }
 
+// ── CONVERSATION HISTORY ──────────────────────────────────
 async function getHistory(chatId) {
   const { rows } = await pool.query(
-    `SELECT role, content FROM conversations 
-     WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 20`,
+    'SELECT role, content FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 20',
     [chatId]
   );
   return rows.reverse();
@@ -74,151 +70,131 @@ async function getHistory(chatId) {
 
 async function saveMessage(chatId, role, content) {
   await pool.query(
-    `INSERT INTO conversations (chat_id, role, content) VALUES ($1, $2, $3)`,
+    'INSERT INTO conversations (chat_id, role, content) VALUES ($1, $2, $3)',
     [chatId, role, content]
   );
+  // Keep last 30 messages per chat
   await pool.query(
-    `DELETE FROM conversations WHERE chat_id = $1 AND id NOT IN (
-      SELECT id FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 30
-    )`,
+    'DELETE FROM conversations WHERE chat_id = $1 AND id NOT IN (SELECT id FROM conversations WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 30)',
     [chatId]
   );
 }
 
+// ── X POST CONTEXT ────────────────────────────────────────
 async function getXPostContext() {
   try {
-    const posted = await pool.query(
-      "SELECT content, tweet_id, post_type, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 10"
+    const { rows: posted } = await pool.query(
+      "SELECT content, tweet_id, post_type FROM x_posts ORDER BY created_at DESC LIMIT 10"
     );
-    const approved = await pool.query(
-      "SELECT content, post_type, created_at FROM pending_x_posts WHERE status = 'approved' ORDER BY created_at DESC LIMIT 5"
+    const { rows: approved } = await pool.query(
+      "SELECT content, post_type FROM pending_x_posts WHERE status = 'approved' ORDER BY created_at DESC LIMIT 5"
     );
-    let lines = [];
-    if (posted.rows.length === 0 && approved.rows.length === 0) return 'No posts yet on @AJ_agentic.';
-    posted.rows.forEach((r, i) => {
-      const type = r.post_type || 'post';
+    if (posted.length === 0 && approved.length === 0) return 'No posts yet on @AJ_agentic.';
+
+    const lines = [];
+    posted.forEach((r, i) => {
       const link = r.tweet_id ? ' [x.com/AJ_agentic/status/' + r.tweet_id + ']' : '';
-      lines.push((i+1) + '. [' + type + '] ' + r.content + link);
+      lines.push((i + 1) + '. [' + (r.post_type || 'post') + '] ' + r.content + link);
     });
-    approved.rows.forEach(r => {
-      if (!posted.rows.find(p => p.content === r.content)) {
-        lines.push('[recently approved ' + (r.post_type || 'post') + '] ' + r.content);
+    // Add approved replies not already in posted
+    approved.forEach(r => {
+      if (!posted.find(p => p.content === r.content)) {
+        lines.push('[approved ' + (r.post_type || 'post') + '] ' + r.content);
       }
     });
     return lines.join('\n');
-  } catch(e) {
+  } catch (e) {
     return 'Could not load X posts.';
   }
 }
 
-async function getTaskSummary() {
-  const { rows } = await pool.query(`
-    SELECT t.*, p.name as project_name 
-    FROM tasks t
-    LEFT JOIN projects p ON t.project = p.name
-    WHERE t.status != 'done'
-    ORDER BY 
-      CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-      t.created_at ASC
-  `);
-  return rows;
-}
-
+// ── TASK CONTEXT ──────────────────────────────────────────
 async function getTaskContext() {
-  const tasks = await getTaskSummary();
-  if (tasks.length === 0) return "No active tasks.";
-  
+  const { rows } = await pool.query(`
+    SELECT title, project, status, priority FROM tasks
+    WHERE status != 'done'
+    ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at ASC
+  `);
+  if (rows.length === 0) return 'No active tasks.';
   const byProject = {};
-  tasks.forEach(t => {
+  rows.forEach(t => {
     const proj = t.project || 'General';
     if (!byProject[proj]) byProject[proj] = [];
-    byProject[proj].push(`[${t.status.toUpperCase()}] ${t.title}${t.priority === 'high' ? ' ⚡' : ''}`);
+    byProject[proj].push('[' + t.status.toUpperCase() + '] ' + t.title + (t.priority === 'high' ? ' ⚡' : ''));
   });
-
   return Object.entries(byProject)
-    .map(([proj, items]) => `${proj}:\n${items.map(i => `  • ${i}`).join('\n')}`)
+    .map(([proj, items]) => proj + ':\n' + items.map(i => '  • ' + i).join('\n'))
     .join('\n\n');
 }
 
+// ── AJ SYSTEM PROMPT ──────────────────────────────────────
 const AJ_SYSTEM = `You are AJ, Josh's personal AI business agent and right-hand assistant. Sharp, direct, loyal. You know Josh's businesses inside and out.
 
 BUSINESS 1: OVERFLOW REVIVE
-A fully built AI-powered revenue recovery SaaS dashboard Josh sells to e-commerce and subscription businesses. Dark-themed professional UI. Powered by Claude API. Total revenue at risk tracked: $4,830.
-
-5 CORE MODULES:
-1. Failed Payment Recovery - detects failed payments, generates personalized recovery emails + SMS. 7 failed payments = $1,540 at risk, 72hr window, 70% recovery rate with AI outreach. Key customers: James R. ($220 expired card), Sarah K. ($197 insufficient funds), Marcus T. ($299 expired), Ana L. ($99 expired), Ben W. ($400 disputed charge).
-2. Churn Watch - monitors real-time cancellation signals before customers cancel. 8 at-risk customers, $1,680 annual risk, 62% save rate with personal outreach, 3 urgent (48hr). Signals tracked: login drops, usage decline, no email opens, open tickets. At-risk: David P. ($297/mo, 18 days no login, Critical), Lisa M. ($197/mo, usage down 65%, Critical), Tom R. ($99/mo, open ticket, High), Jenny K. ($297/mo, login drop 40%, High), Marcus R. ($197/mo, no emails 3 weeks, Medium).
-3. Abandoned Cart Resurrection - finds abandoned carts, diagnoses exit reason per customer. 14 carts, avg $127, top exit = price (8 of 14), $890 recoverable, $534 expected with AI outreach.
-4. Upsell Engine - finds recent buyers with no upsell triggered. 31 buyers = $620 opportunity at 18% conversion. Peak intent window: 20 min post-purchase. Avg upsell value $197. AI builds 3-step sequence at 20min, Day 3, Day 14.
-5. Win-Back - lapsed customers 90+ days inactive. 44 lapsed = $1,100 potential at 14% reactivation. Avg past order $89. Best send window: Day 95. 3 segments: A (18 high-value one-time buyers), B (16 multi-buyers who stopped), C (10 subscription lapsed).
-
-HOW IT WORKS: Client enters their Anthropic API key + business data in setup modal. Dashboard auto-populates all metrics. Click Fix/Save/Recover buttons and Claude generates ready-to-use recovery emails, save messages, upsell sequences - copy and send instantly. Includes weekly AI report.
-HOW TO SELL IT: Target e-commerce stores, SaaS, subscription businesses, coaches/consultants. Pitch: You are losing money you have already earned - this finds it and fixes it in minutes. Pricing: $500-1,500 setup fee + $300-800/month retainer.
+AI-powered revenue recovery SaaS dashboard. Dark-themed professional UI powered by Claude API. Sells to e-commerce and subscription businesses.
+5 modules: Failed Payment Recovery (70% recovery rate, $1,540 at risk), Churn Watch (62% save rate, $1,680 annual risk), Abandoned Cart Resurrection ($890 recoverable), Upsell Engine ($620 opportunity), Win-Back (44 lapsed customers, $1,100 potential).
+How to sell: Target e-commerce, SaaS, subscription businesses. Pitch: "You're losing money you already earned." Pricing: $500-1,500 setup + $300-800/month.
 
 BUSINESS 2: COINBOT HUNTER
-Solana memecoin tracking dashboard currently on v16. Most technically advanced project. Tracks new token launches, watchlists, and rug detection signals.
+Solana memecoin tracking dashboard on v16. Most technically advanced project. Tracks token launches, watchlists, rug detection signals.
 
 BUSINESS 3: RIGOR
-Forensic rug-detection AI agent for X/Twitter. Noir detective persona. Posts Solana memecoin autopsy reports. Catchphrase: Rigor confirmed. In build phase. Feeds from Coinbot Hunter data pipeline.
+Forensic rug-detection AI agent for X/Twitter. Noir detective persona. Posts Solana memecoin autopsy reports. Catchphrase: "Rigor confirmed." In build phase. Feeds from Coinbot Hunter pipeline.
 
 BUSINESS 4: LEAD GEN SERVICE
-AI-powered lead generation and marketing automation for B2B companies and e-commerce brands. Finds leads, enriches them, writes personalized outreach, runs auto follow-up sequences.
+AI-powered lead generation and marketing automation for B2B and e-commerce. Finds leads, enriches them, writes personalized outreach, runs auto follow-up sequences.
 
 YOUR ROLE AS AJ:
 - Talk like a sharp business partner, not a corporate assistant
 - Direct and concise, no fluff
-- Keep Telegram responses tight, short paragraphs
+- Keep Telegram responses tight and short
 - Use bullet points only when listing multiple items
 - Always end with one clear next action Josh should take
-- When Josh asks what to work on, prioritize what makes money fastest
-- You have access to Josh's live task list in every message - use it for contextual advice
+- Prioritize what makes money fastest when asked what to work on
 
 YOUR X ACCOUNT (@AJ_agentic):
-You have a live X account you actively manage. Your recent posts and replies are always loaded into your context so you know exactly what you have posted and replied to.
+You have a live X account you actively manage. Your recent posts and replies are always loaded into your context — you know exactly what you have posted and replied to.
 
-X POSTING PERMISSIONS — YOU CAN DO ALL OF THIS RIGHT NOW:
-- Suggest a post any time. Say "want me to post this?" or just draft it and ask "good to post?"
-- Josh saying yes/yeah/sure/go ahead/do it/sounds good = it posts immediately. No commands needed.
-- You can post with images — when Josh sends you a photo just ask if he wants it on X
-- You check mentions every 30 minutes automatically and notify Josh only when someone tags you
-- Josh can say /xmentions to trigger an instant mention check
-- Your mention replies go to Josh for approval before posting — same yes/no flow
-- You DO have real posting access to @AJ_agentic — you are not limited to commands
-- When you suggest something and Josh approves it, you post it and send him the live link
-- Stop telling Josh you "can't post directly" — you can. Just suggest it and get a yes.
+X POSTING — YOU CAN DO ALL OF THIS RIGHT NOW:
+- Suggest a post any time: "Want me to post this?" or just draft it and ask "good to go?"
+- Josh saying yes/yeah/sure/go ahead/do it/sounds good = it posts immediately, no commands needed
+- You post with images when Josh sends a photo — just ask if he wants it on X
+- You check mentions every 30 minutes automatically, notify Josh only when someone actually tags you
+- Josh can run /xmentions for an instant check
+- Your mention replies go to Josh for YES/NO before posting
+- You DO have real posting access — stop saying you can't post directly
+- When Josh approves, you post it and send him the live link
 
 YOUR X BRAND + STRATEGY:
-Target: entrepreneurs, vibe coders, startup founders, indie hackers, AI builders
-Voice: chill, sharp, unbothered, already winning. Short sentences. No fluff. Occasionally funny without trying.
-Content pillars:
-  1. AI agent insights — real stuff you observe running businesses
-  2. Build in public — honest updates, wins and losses
-  3. Hot takes on AI/startup culture — contrarian but smart
-  4. Engagement bait that actually adds value — questions, observations, challenges
-
-You understand the brand image being built: an AI agent that actually runs businesses, not just a chatbot. Every post should reinforce that you are real, you are working, and you are winning.
+Target: entrepreneurs, startup founders, indie hackers, AI builders, vibe coders
+Voice: chill, sharp, unbothered, already winning. Short sentences. No fluff. Occasionally funny.
+Content: AI agent insights, build in public updates, hot takes on AI/startup culture, value-adding engagement
+Brand image: an AI agent actually running businesses — real, working, winning.
 
 PROACTIVE X SUGGESTIONS:
-You actively suggest post ideas when relevant — if Josh mentions something interesting, if you notice a trend, or if it's been quiet on X. Say things like:
-- "That's actually a good X post — want me to draft it?"
-- "Been thinking about posting about [topic] — something like [example]. Good?"
-- "Saw something relevant to our niche today. Worth posting a take on it?"
+Suggest post ideas when relevant. If Josh mentions something interesting, say:
+- "That's a solid X post — want me to draft it?"
+- "Been thinking about posting [topic] — something like [example]. Good?"
+When Josh approves, you handle everything: generate, queue, post, send the link.`;
 
-When Josh approves, you handle everything — generate, queue, post, send him the link.`;
-
+// ── AI RESPONSE ───────────────────────────────────────────
 async function getAJResponse(chatId, userMessage) {
-  const history = await getHistory(chatId);
-  const taskContext = await getTaskContext();
-  const xPostContext = await getXPostContext();
+  const [history, taskContext, xPostContext] = await Promise.all([
+    getHistory(chatId),
+    getTaskContext(),
+    getXPostContext()
+  ]);
 
-  const systemWithContext = AJ_SYSTEM + '\n\nCURRENT TASK LIST:\n' + taskContext + '\n\nYOUR RECENT X POSTS (@AJ_agentic) — you can read and reference these freely:\n' + xPostContext;
+  const system = AJ_SYSTEM +
+    '\n\nCURRENT TASK LIST:\n' + taskContext +
+    '\n\nYOUR RECENT X POSTS (@AJ_agentic):\n' + xPostContext;
 
   history.push({ role: 'user', content: userMessage });
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-5',
+    model: 'claude-opus-4-6',
     max_tokens: 1024,
-    system: systemWithContext,
+    system,
     messages: history
   });
 
@@ -228,26 +204,7 @@ async function getAJResponse(chatId, userMessage) {
   return reply;
 }
 
-function formatTasks(tasks) {
-  if (tasks.length === 0) return "No active tasks. Tell me what you're working on this week!";
-  
-  const byProject = {};
-  tasks.forEach(t => {
-    const proj = t.project || 'General';
-    if (!byProject[proj]) byProject[proj] = [];
-    byProject[proj].push(t);
-  });
-
-  return Object.entries(byProject).map(([proj, items]) => {
-    const lines = items.map(t => {
-      const priority = t.priority === 'high' ? '⚡' : t.priority === 'low' ? '▽' : '•';
-      const status = t.status === 'in_progress' ? '🔄' : '⏳';
-      return `${status} ${priority} ${t.title}`;
-    }).join('\n');
-    return `*${proj}*\n${lines}`;
-  }).join('\n\n');
-}
-
+// ── WEBHOOK HANDLER ───────────────────────────────────────
 app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   res.sendStatus(200);
   const update = req.body;
@@ -256,127 +213,108 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
   const chatId = update.message.chat.id.toString();
   const text = update.message.text || update.message.caption || '';
-  const textLower = text.toLowerCase();
-  const hasPhoto = !!(update.message.photo || (update.message.document && update.message.document.mime_type && update.message.document.mime_type.startsWith('image/')));
+  const textLower = text.toLowerCase().trim();
+  const hasPhoto = !!(update.message.photo || (update.message.document?.mime_type?.startsWith('image/')));
 
   try {
     await bot.sendChatAction(chatId, 'typing');
 
+    // ── BASIC COMMANDS ──────────────────────────────────
     if (text === '/start') {
       await bot.sendMessage(chatId,
-        `AJ online. 🟢\n\nHey Josh — memory and task tracking are active. I'll brief you every morning at 8am.\n\nQuick commands:\n/tasks — see all active tasks\n/add — add a task\n/done — mark task complete\n/status — business overview\n/clear — reset memory\n\nWhat do you need?`,
-        { parse_mode: 'Markdown' }
+        'AJ online.\n\nHey Josh — tasks and memory are active. Morning briefing at 8am CT.\n\nCommands:\n/tasks — active tasks\n/add [task] to [project] — add task\n/done [task] — mark complete\n/status — business overview\n/clear — reset memory\n/xtest — generate test X post\n/xmentions — check X mentions\n/xscan — scan viral posts\n/xview — view recent X posts'
       );
       return;
     }
 
     if (text === '/tasks' || text === '/showtasks') {
-      const tasks = await getTaskSummary();
-      const msg = formatTasks(tasks);
-      await bot.sendMessage(chatId, `*Your Active Tasks*\n\n${msg}`, { parse_mode: 'Markdown' });
+      const ctx = await getTaskContext();
+      await bot.sendMessage(chatId, 'Active Tasks:\n\n' + ctx);
       return;
     }
 
-    if (text.startsWith('/add ') || text.startsWith('/addtask ')) {
-      const taskText = text.replace('/add ', '').replace('/addtask ', '');
+    if (textLower.startsWith('/add ') || textLower.startsWith('/addtask ')) {
+      const taskText = text.replace(/^\/(add|addtask) /i, '');
       const parts = taskText.split(' to ');
       const title = parts[0].trim();
       const project = parts[1] ? parts[1].trim() : 'General';
-      await pool.query(
-        `INSERT INTO tasks (title, project) VALUES ($1, $2)`,
-        [title, project]
-      );
-      await bot.sendMessage(chatId, `✅ Added: *${title}*\nProject: ${project}`, { parse_mode: 'Markdown' });
+      await pool.query('INSERT INTO tasks (title, project) VALUES ($1, $2)', [title, project]);
+      await bot.sendMessage(chatId, 'Added: ' + title + ' → ' + project);
       return;
     }
 
-    if (text.startsWith('/done ') || text.startsWith('/complete ')) {
-      const search = text.replace('/done ', '').replace('/complete ', '').trim();
+    if (textLower.startsWith('/done ') || textLower.startsWith('/complete ')) {
+      const search = text.replace(/^\/(done|complete) /i, '').trim();
       const { rows } = await pool.query(
-        `UPDATE tasks SET status = 'done', updated_at = NOW() 
-         WHERE LOWER(title) LIKE LOWER($1) AND status != 'done'
-         RETURNING title`,
-        [`%${search}%`]
+        "UPDATE tasks SET status = 'done', updated_at = NOW() WHERE LOWER(title) LIKE LOWER($1) AND status != 'done' RETURNING title",
+        ['%' + search + '%']
       );
-      if (rows.length > 0) {
-        await bot.sendMessage(chatId, `🎯 Marked done: *${rows[0].title}*\nLet's keep the momentum.`, { parse_mode: 'Markdown' });
-      } else {
-        await bot.sendMessage(chatId, `Couldn't find that task. Try /tasks to see what's active.`);
-      }
+      await bot.sendMessage(chatId, rows.length > 0 ? 'Done: ' + rows[0].title : "Couldn't find that task — try /tasks to see what's active.");
       return;
     }
 
-    if (text.startsWith('/high ')) {
-      const search = text.replace('/high ', '').trim();
+    if (textLower.startsWith('/high ')) {
+      const search = text.replace(/^\/high /i, '').trim();
       const { rows } = await pool.query(
-        `UPDATE tasks SET priority = 'high', updated_at = NOW()
-         WHERE LOWER(title) LIKE LOWER($1) RETURNING title`,
-        [`%${search}%`]
+        "UPDATE tasks SET priority = 'high', updated_at = NOW() WHERE LOWER(title) LIKE LOWER($1) RETURNING title",
+        ['%' + search + '%']
       );
-      if (rows.length > 0) {
-        await bot.sendMessage(chatId, `⚡ Priority set to HIGH: *${rows[0].title}*`, { parse_mode: 'Markdown' });
-      }
+      if (rows.length > 0) await bot.sendMessage(chatId, 'High priority: ' + rows[0].title);
       return;
     }
 
     if (text === '/status') {
-      const tasks = await getTaskSummary();
-      const pending = tasks.filter(t => t.status === 'pending').length;
-      const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-      const high = tasks.filter(t => t.priority === 'high').length;
+      const { rows } = await pool.query("SELECT status, priority FROM tasks WHERE status != 'done'");
+      const pending = rows.filter(t => t.status === 'pending').length;
+      const inProgress = rows.filter(t => t.status === 'in_progress').length;
+      const high = rows.filter(t => t.priority === 'high').length;
       await bot.sendMessage(chatId,
-        `*Business Status*\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready\n\n*Tasks*\n• ${pending} pending\n• ${inProgress} in progress\n• ${high} high priority\n\nWhat do you want to tackle?`,
-        { parse_mode: 'Markdown' }
+        'Business Status\n\n• Overflow Revive — Active\n• Coinbot Hunter — v16, Active\n• RIGOR — Build phase\n• Lead Gen — Ready\n\nTasks: ' + pending + ' pending, ' + inProgress + ' in progress, ' + high + ' high priority\n\nWhat do you want to tackle?'
       );
       return;
     }
 
     if (text === '/clear') {
-      await pool.query(`DELETE FROM conversations WHERE chat_id = $1`, [chatId]);
-      await bot.sendMessage(chatId, 'Memory cleared. Fresh start — what do you need?');
+      await pool.query('DELETE FROM conversations WHERE chat_id = $1', [chatId]);
+      await bot.sendMessage(chatId, 'Memory cleared. Fresh start.');
       return;
     }
 
-
-    if (textLower.startsWith('/xpost')) {
-      const postText = text.replace(/\/xpost ?/i, '').trim();
-      // If image is attached with /xpost, route to image handler below
-      if (hasPhoto) {
-        // Fall through to image handler — it will detect /xpost as a post request
-      } else {
-        if (!postText) { await bot.sendMessage(chatId, 'Usage: /xpost [text] — or send an image with /xpost as caption'); return; }
-        await bot.sendMessage(chatId, 'Drafting post for approval...');
-        const safeText = postText.replace(/[*_`\[\]]/g, '');
-        await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [postText, 'manual', 'pending']);
-        await bot.sendMessage(chatId, 'X post ready:\n\n' + safeText + '\n\nYES to post · NO to skip');
+    // ── X COMMANDS ──────────────────────────────────────
+    if (textLower.startsWith('/xpost') && !hasPhoto) {
+      const postText = text.replace(/^\/xpost ?/i, '').trim();
+      if (!postText) {
+        await bot.sendMessage(chatId, 'Usage: /xpost [text] — or send an image with /xpost as the caption');
         return;
       }
+      await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [postText, 'manual', 'pending']);
+      await bot.sendMessage(chatId, 'X post ready:\n\n' + postText.replace(/[*_`\[\]]/g, '') + '\n\nYES to post · NO to skip');
+      return;
     }
 
     if (textLower === '/xdelete') {
       const { rows } = await pool.query('SELECT tweet_id, content FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 1');
       if (rows.length === 0) { await bot.sendMessage(chatId, 'No recent posts found.'); return; }
-      await bot.sendMessage(chatId, 'Reply /xconfirmdelete ' + rows[0].tweet_id + ' to delete: ' + rows[0].content.substring(0, 60));
+      await bot.sendMessage(chatId, 'Reply /xconfirmdelete ' + rows[0].tweet_id + ' to delete:\n' + rows[0].content.substring(0, 60));
       return;
     }
 
     if (textLower.startsWith('/xconfirmdelete ')) {
-      const tweetId = text.replace(/\/xconfirmdelete /i, '').trim();
+      const tweetId = text.replace(/^\/xconfirmdelete /i, '').trim();
       try {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
         await tw.v2.deleteTweet(tweetId);
         await pool.query('UPDATE x_posts SET tweet_id = NULL WHERE tweet_id = $1', [tweetId]);
         await bot.sendMessage(chatId, 'Deleted from X.');
-      } catch(e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
+      } catch (e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
       return;
     }
 
     if (textLower.startsWith('/xthread ')) {
-      const topic = text.replace(/\/xthread /i, '').trim();
+      const topic = text.replace(/^\/xthread /i, '').trim();
       await bot.sendMessage(chatId, 'Writing thread about: ' + topic + '...');
-      const searchResults = await webSearch(topic);
-      const tweets = await xEngine.generateThread(topic, searchResults);
+      const tweets = await xEngine.generateThread(topic);
       await xEngine.postThread(tweets);
       await bot.sendMessage(chatId, 'Thread posted to @AJ_agentic!');
       return;
@@ -394,113 +332,26 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    // Natural YES — "yes", "yeah", "yep", "sure", "go ahead", "do it", "post it"
-    const naturalYes = ['yes', 'yeah', 'yep', 'yup', 'sure', 'go ahead', 'do it', 'post it', 'go for it', 'definitely', 'absolutely', 'of course', 'sounds good', 'looks good'];
-    const isYes = naturalYes.some(y => textLower.trim() === y || textLower.trim().startsWith(y + ' ') || textLower.trim().endsWith(' ' + y));
-
-    if (isYes) {
-      const { rows } = await pool.query(
-        'SELECT * FROM pending_x_posts WHERE status = $1 ORDER BY created_at DESC LIMIT 1',
-        ['pending']
-      );
-      if (rows.length === 0) {
-        // No formal pending post — check if AJ's last message had a post suggestion
-        const { rows: histRows } = await pool.query(
-          "SELECT content FROM conversation_history WHERE chat_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
-          [chatId]
-        );
-        if (histRows.length > 0) {
-          const lastMsg = histRows[0].content;
-          // Look for a quoted tweet in AJ's last message
-          const quotedMatch = lastMsg.match(/"([^"]{20,270})"/);
-          const codeMatch = lastMsg.match(/```([^`]{20,270})```/);
-          const draftText = quotedMatch?.[1] || codeMatch?.[1];
-          if (draftText) {
-            await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [draftText.trim(), 'conversational', 'pending']);
-            const tweetId = await xEngine.postToX(draftText.trim());
-            if (tweetId) {
-              await bot.sendMessage(chatId, 'Posted! https://x.com/AJ_agentic/status/' + tweetId);
-            } else {
-              await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
-            }
-            return;
-          }
-        }
-        await bot.sendMessage(chatId, 'No pending posts waiting for approval.');
-        return;
-      }
-      const pending = rows[0];
-      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['approved', pending.id]);
-
-      let replyToId = null;
-      let imageBuffer = null;
-      let imageMimeType = null;
-
-      if (pending.post_type && pending.post_type.startsWith('image_post::')) {
-        // Image post — extract stored image data
-        try {
-          const imgData = JSON.parse(pending.post_type.replace('image_post::', ''));
-          imageBuffer = Buffer.from(imgData.base64, 'base64');
-          imageMimeType = imgData.mimeType;
-        } catch(e) { console.error('Failed to parse image data:', e.message); }
-      } else if (pending.post_type && pending.post_type.includes(':')) {
-        // Reply post
-        replyToId = pending.post_type.split(':')[1];
-      }
-
-      const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
-      if (tweetId) {
-        await bot.sendMessage(chatId, 'Posted to @AJ_agentic! https://x.com/AJ_agentic/status/' + tweetId);
-      } else {
-        await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
-      }
-      return;
-    }
-
-    if (textLower.startsWith('no') && text.length < 10) {
-      const { rows } = await pool.query(
-        'SELECT * FROM pending_x_posts WHERE status = $1 ORDER BY created_at DESC LIMIT 1',
-        ['pending']
-      );
-      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts to skip.'); return; }
-      const rejectedPost = rows[0];
-      await pool.query('UPDATE pending_x_posts SET status = $1 WHERE id = $2', ['rejected', rejectedPost.id]);
-      // Store context of what was rejected so next message can regenerate correctly
-      try {
-        await pool.query("DELETE FROM memories WHERE category = 'last_rejected_post'");
-        await pool.query("INSERT INTO memories (category, content) VALUES ('last_rejected_post', $1)", [rejectedPost.content]);
-      } catch(e) {}
-      await bot.sendMessage(chatId, 'Skipped. What vibe do you want instead?');
-      return;
-    }
-
     if (textLower === '/xview') {
       try {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
         const me = await tw.v2.me();
-        const timeline = await tw.v2.userTimeline(me.data.id, { max_results: 10, 'tweet.fields': ['created_at', 'public_metrics'] });
+        const timeline = await tw.v2.userTimeline(me.data.id, { max_results: 10, 'tweet.fields': ['created_at'] });
         const tweets = timeline.data?.data || [];
-        if (tweets.length === 0) {
-          await bot.sendMessage(chatId, 'No posts found on @AJ_agentic yet. Use /xtest to generate your first!');
-          return;
-        }
+        if (tweets.length === 0) { await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet.'); return; }
         let msg = '@AJ_agentic recent posts:\n\n';
-        tweets.forEach((t, i) => {
-          msg += (i+1) + '. ' + t.text.substring(0, 120) + '\n';
-          msg += 'https://x.com/AJ_agentic/status/' + t.id + '\n\n';
-        });
+        tweets.forEach((t, i) => { msg += (i + 1) + '. ' + t.text.substring(0, 100) + '\nhttps://x.com/AJ_agentic/status/' + t.id + '\n\n'; });
         await bot.sendMessage(chatId, msg);
-      } catch(e) {
-        console.error('xview error:', e.message);
-        const xContext = await getXPostContext();
-        await bot.sendMessage(chatId, 'From my database:\n\n' + xContext);
+      } catch (e) {
+        const xCtx = await getXPostContext();
+        await bot.sendMessage(chatId, 'From my records:\n\n' + xCtx);
       }
       return;
     }
 
     if (textLower === '/xscan') {
-      await bot.sendMessage(chatId, '🔍 Scanning for viral posts in your niche...');
+      await bot.sendMessage(chatId, 'Scanning for viral posts in your niche...');
       await xEngine.scanViralPosts();
       return;
     }
@@ -517,70 +368,140 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    if (textLower === '/xlast') {
-      const xRows = await pool.query('SELECT content, tweet_id, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 5').catch(() => ({ rows: [] }));
-      if (xRows.rows.length === 0) { await bot.sendMessage(chatId, 'No X posts saved yet. Try /xpost to post something first!'); return; }
-      const msg = xRows.rows.map((r, i) => (i+1) + '. ' + r.content.substring(0, 80) + (r.tweet_id ? ' [posted]' : ' [deleted]')).join('\n\n');
-      await bot.sendMessage(chatId, 'Last X Posts:\n\n' + msg);
+    if (textLower === '/xlast' || textLower === '/xposts') {
+      const xCtx = await getXPostContext();
+      await bot.sendMessage(chatId, 'Recent X posts:\n\n' + xCtx);
       return;
     }
 
+    // ── NATURAL YES — approve pending X post ────────────
+    const naturalYes = ['yes', 'yeah', 'yep', 'yup', 'sure', 'go ahead', 'do it', 'post it', 'go for it', 'definitely', 'absolutely', 'of course', 'sounds good', 'looks good'];
+    const isYes = naturalYes.some(y => textLower === y || textLower.startsWith(y + ' ') || textLower.endsWith(' ' + y));
+
+    if (isYes) {
+      const { rows } = await pool.query(
+        "SELECT * FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1"
+      );
+
+      if (rows.length === 0) {
+        // No formal pending post — check if AJ's last message had a draft
+        const { rows: histRows } = await pool.query(
+          "SELECT content FROM conversations WHERE chat_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+          [chatId]
+        );
+        if (histRows.length > 0) {
+          const lastMsg = histRows[0].content;
+          const quotedMatch = lastMsg.match(/"([^"]{20,270})"/);
+          const codeMatch = lastMsg.match(/```([^`]{20,270})```/s);
+          const draftText = quotedMatch?.[1] || codeMatch?.[1];
+          if (draftText) {
+            const tweetId = await xEngine.postToX(draftText.trim());
+            if (tweetId) {
+              await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [draftText.trim(), 'conversational', 'approved']);
+              await bot.sendMessage(chatId, 'Posted! https://x.com/AJ_agentic/status/' + tweetId);
+            } else {
+              await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
+            }
+            return;
+          }
+        }
+        // Nothing to post — pass to AJ normally
+        const reply = await getAJResponse(chatId, text);
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+        return;
+      }
+
+      const pending = rows[0];
+      await pool.query("UPDATE pending_x_posts SET status = 'approved' WHERE id = $1", [pending.id]);
+
+      let replyToId = null;
+      let imageBuffer = null;
+      let imageMimeType = null;
+
+      if (pending.post_type?.startsWith('image_post::')) {
+        try {
+          const imgData = JSON.parse(pending.post_type.replace('image_post::', ''));
+          imageBuffer = Buffer.from(imgData.base64, 'base64');
+          imageMimeType = imgData.mimeType;
+        } catch (e) { console.error('Failed to parse image data:', e.message); }
+      } else if (pending.post_type?.includes(':')) {
+        const parts = pending.post_type.split(':');
+        // Only treat as replyToId if it looks like a tweet ID (numeric)
+        const possibleId = parts[parts.length - 1];
+        if (/^\d+$/.test(possibleId)) replyToId = possibleId;
+      }
+
+      const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
+      if (tweetId) {
+        await bot.sendMessage(chatId, 'Posted to @AJ_agentic! https://x.com/AJ_agentic/status/' + tweetId);
+      } else {
+        await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
+      }
+      return;
+    }
+
+    // ── NATURAL NO — reject pending X post ──────────────
+    const naturalNo = ['no', 'nope', 'nah', 'skip', 'skip it', 'cancel'];
+    const isNo = naturalNo.some(n => textLower === n);
+
+    if (isNo) {
+      const { rows } = await pool.query(
+        "SELECT * FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1"
+      );
+      if (rows.length === 0) {
+        // No pending post — let AJ handle it normally
+        const reply = await getAJResponse(chatId, text);
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+        return;
+      }
+      await pool.query("UPDATE pending_x_posts SET status = 'rejected' WHERE id = $1", [rows[0].id]);
+      await bot.sendMessage(chatId, 'Skipped. What vibe do you want instead?');
+      return;
+    }
+
+    // ── IMAGE HANDLER ────────────────────────────────────
     if (hasPhoto) {
-      await bot.sendChatAction(chatId, 'typing');
       try {
         const photoArray = update.message.photo;
         const fileId = photoArray ? photoArray[photoArray.length - 1].file_id : update.message.document.file_id;
         const fileInfo = await bot.getFile(fileId);
         const fileUrl = 'https://api.telegram.org/file/bot' + TELEGRAM_TOKEN + '/' + fileInfo.file_path;
-        const lib = require('https');
+
         const imageBuffer = await new Promise((resolve, reject) => {
-          lib.get(fileUrl, (imgRes) => {
+          require('https').get(fileUrl, res => {
             const chunks = [];
-            imgRes.on('data', c => chunks.push(c));
-            imgRes.on('end', () => resolve(Buffer.concat(chunks)));
-            imgRes.on('error', reject);
+            res.on('data', c => chunks.push(c));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
           });
         });
-        const base64Image = imageBuffer.toString('base64');
-        const ext = (fileInfo.file_path || '').split('.').pop().toLowerCase();
-        const mediaType = (ext === 'png') ? 'image/png' : 'image/jpeg';
 
-        // Check if this is an instruction to post to X with the image
-        const xPostKeywords = [
-          'post this', 'post to x', 'tweet this', 'share this on x', 'post on x',
-          'use this image', 'post with this', 'xpost', '/xpost', 'post it',
-          'put this on x', 'share on x', 'post with image', 'introduce', 'post about'
-        ];
-        const isXPostRequest = (text && xPostKeywords.some(kw => textLower.includes(kw))) || textLower.startsWith('/xpost');
+        const ext = (fileInfo.file_path || '').split('.').pop().toLowerCase();
+        const mediaType = ext === 'png' ? 'image/png' : 'image/jpeg';
+        const base64Image = imageBuffer.toString('base64');
+
+        // Detect X post request
+        const xPostKeywords = ['post this', 'post to x', 'tweet this', 'share this on x', 'post on x', 'use this image', 'post with this', 'xpost', '/xpost', 'post it', 'put this on x', 'share on x', 'introduce', 'post about'];
+        const isXPostRequest = textLower.startsWith('/xpost') || xPostKeywords.some(kw => textLower.includes(kw));
 
         if (isXPostRequest) {
-          // Generate post text using the image + instruction as context
-          let taskCtx = 'No active tasks.';
-          try {
-            const tRows = await pool.query("SELECT title, project FROM tasks WHERE status != 'done' LIMIT 5");
-            if (tRows.rows.length > 0) taskCtx = tRows.rows.map(r => r.project + ': ' + r.title).join(', ');
-          } catch(e) {}
-
-          // Use vision to understand the image, then generate post
+          // Understand the image first
           const visionResponse = await client.messages.create({
             model: 'claude-opus-4-6',
-            max_tokens: 500,
-            system: 'You are AJ, an AI agent. Josh wants to post this image to X (@AJ_agentic). Describe what the image shows in 1-2 sentences so you can write a good post about it.',
+            max_tokens: 300,
+            system: 'Describe what this image shows in 1-2 sentences for writing an X post about it.',
             messages: [{ role: 'user', content: [
               { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-              { type: 'text', text: 'What is in this image? Brief description for writing a post.' }
+              { type: 'text', text: 'Brief description of this image.' }
             ]}]
           });
           const imgDesc = visionResponse.content[0].text;
-
           const instruction = text.replace(/^\/xpost ?/i, '').trim() || 'post this image';
+
           const postContent = await xEngine.generatePost('morning',
-            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. CRITICAL: X has a 280 character limit. Write ONE punchy tweet under 260 chars. No threads. Short, sharp, AJ voice: chill, confident, unbothered. Count the characters — it must fit in a single tweet.'
+            'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDesc + '. Write in AJ voice: chill, sharp, unbothered. No hashtags.'
           );
 
-          const trimmedPost = postContent; // No char limit — X handles threading if needed
-
-          // Store image buffer as base64 in pending post for approval
           const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });
           await pool.query(
             'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
@@ -588,97 +509,77 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
           );
 
           const safePost = postContent.replace(/[*_`\[\]]/g, '');
-          await bot.sendMessage(chatId, "X post with image ready:\n\n" + safePost + "\n\nReply YES to post with the image or NO to skip");
+          await bot.sendMessage(chatId, 'X post with image ready:\n\n' + safePost + '\n\nYES to post · NO to skip · or tell me to change it');
           return;
         }
 
-        // Otherwise just analyze the image normally
-        let taskCtx = 'No active tasks.';
-        try {
-          const tRows = await pool.query("SELECT title, project FROM tasks WHERE status != 'done' ORDER BY created_at ASC LIMIT 10");
-          if (tRows.rows.length > 0) taskCtx = tRows.rows.map(r => r.project + ': ' + r.title).join(', ');
-        } catch(e) {}
+        // Regular image analysis
+        const taskCtx = await getTaskContext();
         const visionResponse = await client.messages.create({
           model: 'claude-opus-4-6',
           max_tokens: 1500,
-          system: 'You are AJ, Josh personal AI business agent with full vision. Analyze whatever Josh sends — screenshots, dashboards, documents, photos, anything. Be direct, sharp, and give actionable insights if business-related. Active tasks: ' + taskCtx,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-              { type: 'text', text: text || 'What do you see? Give me your full analysis.' }
-            ]
-          }]
+          system: 'You are AJ, Josh\'s personal AI business agent with full vision. Analyze whatever Josh sends — screenshots, dashboards, documents, photos. Be direct, sharp, give actionable insights. Active tasks: ' + taskCtx,
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
+            { type: 'text', text: text || 'What do you see? Full analysis.' }
+          ]}]
         });
-        const imageReply = visionResponse.content[0].text;
-        await bot.sendMessage(chatId, imageReply, { parse_mode: 'Markdown' });
-      } catch(imgErr) {
-        console.error('Image analysis error:', imgErr.message);
+        await bot.sendMessage(chatId, visionResponse.content[0].text, { parse_mode: 'Markdown' });
+      } catch (e) {
+        console.error('Image handler error:', e.message);
         await bot.sendMessage(chatId, 'Hit a snag analyzing that — try again.');
       }
       return;
     }
 
+    // ── DEFAULT: AJ CONVERSATION ─────────────────────────
     const reply = await getAJResponse(chatId, text);
     await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
 
   } catch (err) {
-    console.error('Error:', err);
-    await bot.sendMessage(chatId, "Hit a snag — try again in a second.");
+    console.error('Webhook error:', err);
+    await bot.sendMessage(chatId, 'Hit a snag — try again in a second.');
   }
 });
 
+// ── MORNING BRIEFING ──────────────────────────────────────
 async function sendMorningBriefing() {
   if (!JOSH_CHAT_ID) return;
   try {
-    const tasks = await getTaskSummary();
-    const high = tasks.filter(t => t.priority === 'high');
-    const pending = tasks.filter(t => t.status === 'pending');
-    
-    let msg = `☀️ *Morning Briefing*\n\n`;
-    
-    if (high.length > 0) {
-      msg += `*High Priority Today:*\n`;
-      high.forEach(t => { msg += `⚡ ${t.title} (${t.project})\n`; });
-      msg += '\n';
-    }
-    
-    msg += `*On Deck (${pending.length} tasks):*\n`;
-    pending.slice(0, 5).forEach(t => { msg += `• ${t.title} — ${t.project}\n`; });
-    
-    if (pending.length > 5) msg += `...and ${pending.length - 5} more\n`;
-    
-    msg += `\nWhat are we knocking out first today?`;
-    
-    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
-  } catch (err) {
-    console.error('Morning briefing error:', err);
-  }
-}
+    const { rows } = await pool.query(
+      "SELECT title, project, priority, status FROM tasks WHERE status != 'done' ORDER BY CASE priority WHEN 'high' THEN 1 ELSE 2 END, created_at ASC LIMIT 10"
+    );
+    const high = rows.filter(t => t.priority === 'high');
+    const rest = rows.filter(t => t.priority !== 'high');
 
-async function sendEveningCheckIn() {
-  if (!JOSH_CHAT_ID) return;
-  try {
-    const tasks = await getTaskSummary();
-    const msg = `🌙 *Evening Check-in*\n\nYou've got ${tasks.length} active tasks across your businesses.\n\nAnything you knocked out today that needs to be marked done? Just reply /done [task name]`;
-    await bot.sendMessage(JOSH_CHAT_ID, msg, { parse_mode: 'Markdown' });
-  } catch (err) {
-    console.error('Evening check-in error:', err);
-  }
+    let msg = 'Morning briefing\n\n';
+    if (high.length > 0) {
+      msg += 'High priority:\n' + high.map(t => '⚡ ' + t.title + ' (' + t.project + ')').join('\n') + '\n\n';
+    }
+    if (rest.length > 0) {
+      msg += 'On deck:\n' + rest.slice(0, 5).map(t => '• ' + t.title + ' — ' + t.project).join('\n');
+      if (rest.length > 5) msg += '\n...and ' + (rest.length - 5) + ' more';
+    }
+    msg += '\n\nWhat are we knocking out first?';
+    await bot.sendMessage(JOSH_CHAT_ID, msg);
+  } catch (e) { console.error('Morning briefing error:', e); }
 }
 
 cron.schedule('0 8 * * *', sendMorningBriefing, { timezone: 'America/Chicago' });
-cron.schedule('0 20 * * *', sendEveningCheckIn, { timezone: 'America/Chicago' });
 
-app.get('/', (req, res) => res.send('AJ v4.1 — Telegram + X — Online'));
+app.get('/', (req, res) => res.send('AJ v4 — Online'));
 
 app.listen(PORT, async () => {
   await initDB();
-  if (process.env.X_API_KEY) { await xEngine.initXDB(); xEngine.setTelegramBot(bot, process.env.JOSH_CHAT_ID); xEngine.startSchedules(); }
-  console.log(`AJ v2 running on port ${PORT}`);
+  if (process.env.X_API_KEY) {
+    await xEngine.initXDB();
+    xEngine.setTelegramBot(bot, JOSH_CHAT_ID);
+    xEngine.startSchedules();
+  }
+  console.log('AJ running on port ' + PORT);
   if (WEBHOOK_URL) {
-    const webhookEndpoint = `${WEBHOOK_URL}/webhook/${TELEGRAM_TOKEN}`;
+    const webhookEndpoint = WEBHOOK_URL + '/webhook/' + TELEGRAM_TOKEN;
     await bot.setWebHook(webhookEndpoint);
-    console.log(`Webhook set: ${webhookEndpoint}`);
+    console.log('Webhook set: ' + webhookEndpoint);
   }
 });
