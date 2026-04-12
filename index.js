@@ -906,6 +906,16 @@ async function sendMorningBriefing() {
     const high = rows.filter(t => t.priority === 'high');
     const rest = rows.filter(t => t.priority !== 'high');
 
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(0, 0, 0, 0);
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    const { rows: autoPosts } = await pool.query(
+      "SELECT content FROM x_posts WHERE source = 'autonomous' AND posted_at >= $1 AND posted_at < $2 ORDER BY posted_at ASC",
+      [yesterday, todayMidnight]
+    );
+
     let msg = 'Morning briefing\n\n';
     if (high.length > 0) {
       msg += 'High priority:\n' + high.map(t => '⚡ ' + t.title + ' (' + t.project + ')').join('\n') + '\n\n';
@@ -913,6 +923,10 @@ async function sendMorningBriefing() {
     if (rest.length > 0) {
       msg += 'On deck:\n' + rest.slice(0, 5).map(t => '• ' + t.title + ' — ' + t.project).join('\n');
       if (rest.length > 5) msg += '\n...and ' + (rest.length - 5) + ' more';
+    }
+    if (autoPosts.length > 0) {
+      msg += '\n\nPosted autonomously yesterday (' + autoPosts.length + '):\n' +
+        autoPosts.map((p, i) => (i + 1) + '. ' + p.content.substring(0, 100)).join('\n');
     }
     msg += '\n\nWhat are we knocking out first?';
     await bot.sendMessage(JOSH_CHAT_ID, msg);
