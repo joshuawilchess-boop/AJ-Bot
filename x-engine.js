@@ -47,6 +47,23 @@ async function initXDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS x_watchlist (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      added_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS x_engagement_log (
+      id SERIAL PRIMARY KEY,
+      tweet_id TEXT NOT NULL,
+      author_username TEXT,
+      reply_content TEXT,
+      replied_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'scheduled'`);
   console.log('X DB ready');
 }
 
