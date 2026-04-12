@@ -271,7 +271,7 @@ async function checkMentions(manual = false) {
     console.log('Mentions found:', tweets.length);
 
     if (tweets.length === 0) {
-      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
+      if (manual) if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
@@ -352,7 +352,7 @@ async function checkMentions(manual = false) {
     }
 
     if (newCount === 0 && manual) {
-      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
+      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
