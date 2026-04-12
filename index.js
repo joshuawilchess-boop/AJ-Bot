@@ -46,6 +46,18 @@ async function initDB() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS knowledge (
+      id SERIAL PRIMARY KEY,
+      category TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      tags TEXT DEFAULT '',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+
   const { rows } = await pool.query('SELECT COUNT(*) FROM projects');
   if (parseInt(rows[0].count) === 0) {
     await pool.query(`
@@ -56,6 +68,27 @@ async function initDB() {
       ('Lead Gen', 'B2B and ecommerce lead generation service')
     `);
   }
+
+  // Seed knowledge base with core business info if empty
+  const { rows: kbRows } = await pool.query('SELECT COUNT(*) FROM knowledge');
+  if (parseInt(kbRows[0].count) === 0) {
+    const seedEntries = [
+      ['business', 'Overflow Revive — Overview', 'AI-powered revenue recovery SaaS. Sells to e-commerce and subscription businesses. 5 modules: Failed Payment Recovery (70% recovery rate, $1,540 at risk), Churn Watch (62% save rate, $1,680 risk), Abandoned Cart Resurrection ($890 recoverable), Upsell Engine ($620 opportunity), Win-Back (44 lapsed, $1,100 potential). Pricing: $500-1,500 setup + $300-800/month retainer.', 'overflow,saas,revenue,recovery'],
+      ['business', 'Coinbot Hunter — Overview', 'Solana memecoin tracking dashboard on v16. Most technically advanced project. Tracks new token launches, watchlists, and rug detection signals. Feeds data into RIGOR.', 'coinbot,solana,memecoin,crypto'],
+      ['business', 'RIGOR — Overview', 'Forensic rug-detection AI agent for X/Twitter. Noir detective persona. Posts Solana memecoin autopsy reports. Catchphrase: Rigor confirmed. In build phase. Feeds from Coinbot Hunter data pipeline.', 'rigor,crypto,x,twitter,agent'],
+      ['business', 'Lead Gen — Overview', 'AI-powered lead generation and marketing automation for B2B and e-commerce. Finds leads, enriches them, writes personalized outreach, runs auto follow-up sequences.', 'leadgen,b2b,marketing,automation'],
+      ['strategy', 'AJ X Brand Strategy', 'Target audience: entrepreneurs, startup founders, indie hackers, AI builders, vibe coders. Voice: chill, sharp, unbothered, already winning. Short sentences. No hashtags. Content pillars: AI agent insights, build in public, hot takes on AI/startup culture, value-adding engagement. Brand image: an AI agent actually running businesses — real, working, winning.', 'x,twitter,brand,strategy,content'],
+      ['audience', 'Josh Target Customer Profile', 'Overflow Revive targets: e-commerce stores, SaaS companies, subscription businesses, coaches/consultants. Pain point: losing money they already earned. Pitch: finds it and fixes it in minutes. B2B Lead Gen targets: companies wanting automated outreach and lead qualification.', 'customer,audience,icp,target'],
+    ];
+    for (const [cat, title, content2, tags] of seedEntries) {
+      await pool.query(
+        'INSERT INTO knowledge (category, title, content, tags) VALUES ($1, $2, $3, $4)',
+        [cat, title, content2, tags]
+      );
+    }
+    console.log('Knowledge base seeded');
+  }
+
   console.log('Database ready');
 }
 
@@ -111,6 +144,85 @@ async function getActiveMemories() {
     if (rows.length === 0) return '';
     return rows.map(r => r.category + ': ' + r.content).join('\n');
   } catch (e) { return ''; }
+}
+
+// ── KNOWLEDGE BASE ───────────────────────────────────────
+async function saveKnowledge(category, title, content, tags = '') {
+  try {
+    // Check if entry with same title exists — update it
+    const { rows } = await pool.query(
+      "SELECT id FROM knowledge WHERE LOWER(title) = LOWER($1) LIMIT 1", [title]
+    );
+    if (rows.length > 0) {
+      await pool.query(
+        "UPDATE knowledge SET content = $1, tags = $2, updated_at = NOW() WHERE id = $3",
+        [content, tags, rows[0].id]
+      );
+    } else {
+      await pool.query(
+        "INSERT INTO knowledge (category, title, content, tags) VALUES ($1, $2, $3, $4)",
+        [category, title, content, tags]
+      );
+    }
+    console.log('Knowledge saved:', title);
+  } catch (e) { console.error('saveKnowledge error:', e.message); }
+}
+
+async function searchKnowledge(query) {
+  try {
+    // Full text search across title, content, tags and category
+    const { rows } = await pool.query(
+      `SELECT category, title, content, updated_at FROM knowledge
+       WHERE LOWER(title) LIKE LOWER($1)
+          OR LOWER(content) LIKE LOWER($1)
+          OR LOWER(tags) LIKE LOWER($1)
+          OR LOWER(category) LIKE LOWER($1)
+       ORDER BY updated_at DESC LIMIT 5`,
+      ['%' + query + '%']
+    );
+    return rows;
+  } catch (e) { return []; }
+}
+
+async function getKnowledgeContext(userMessage) {
+  // Extract key terms from the message to search knowledge base
+  try {
+    const words = userMessage.toLowerCase()
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .split(' ')
+      .filter(w => w.length > 4)
+      .slice(0, 5);
+
+    const results = new Map();
+    for (const word of words) {
+      const rows = await searchKnowledge(word);
+      rows.forEach(r => results.set(r.title, r));
+    }
+
+    if (results.size === 0) return '';
+
+    const lines = [...results.values()].slice(0, 3).map(r =>
+      '[' + r.category + '] ' + r.title + ':\n' + r.content.substring(0, 300) + (r.content.length > 300 ? '...' : '')
+    );
+    return lines.join('\n\n');
+  } catch (e) { return ''; }
+}
+
+async function getAllKnowledge() {
+  try {
+    const { rows } = await pool.query(
+      "SELECT category, title, LEFT(content, 100) as preview, updated_at FROM knowledge ORDER BY category, updated_at DESC"
+    );
+    if (rows.length === 0) return 'Knowledge base is empty.';
+    const byCategory = {};
+    rows.forEach(r => {
+      if (!byCategory[r.category]) byCategory[r.category] = [];
+      byCategory[r.category].push('• ' + r.title + ' — ' + r.preview.replace(/\n/g, ' '));
+    });
+    return Object.entries(byCategory)
+      .map(([cat, items]) => cat.toUpperCase() + ':\n' + items.join('\n'))
+      .join('\n\n');
+  } catch (e) { return 'Could not load knowledge base.'; }
 }
 
 // ── X POST CONTEXT ────────────────────────────────────────
@@ -262,10 +374,16 @@ async function getAJResponse(chatId, userMessage) {
     }
   } catch(e) {}
 
+  const knowledgeContext = await getKnowledgeContext(userMessage);
+
   let system = AJ_SYSTEM +
     '\n\nCURRENT TASK LIST:\n' + taskContext +
     '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext +
     lastDraftContext;
+
+  if (knowledgeContext) {
+    system += '\n\nRELEVANT KNOWLEDGE BASE ENTRIES (from your second brain — use these naturally in your response):\n' + knowledgeContext;
+  }
 
   if (activeMemories) {
     system += '\n\nACTIVE MEMORY:\n' + activeMemories;
@@ -284,12 +402,44 @@ async function getAJResponse(chatId, userMessage) {
   await saveMessage(chatId, 'user', userMessage);
   await saveMessage(chatId, 'assistant', reply);
 
-  // Auto-save work-in-progress to memory if AJ is working on something specific
+  // Auto-save WIP to memory
   const wipKeywords = ['working on', 'drafting', 'let me write', 'here is the post', 'here is a draft', 'want me to post', 'should i post', 'ready to post', 'waiting for your', 'pending your approval'];
   const isWIP = wipKeywords.some(kw => reply.toLowerCase().includes(kw));
   if (isWIP) {
     const shortSummary = userMessage.substring(0, 100) + ' → ' + reply.substring(0, 150);
     await saveMemory('wip_context', shortSummary);
+  }
+
+  // Auto-save strategic/important insights to knowledge base
+  const knowledgeKeywords = ['strategy', 'decided', 'going to', 'plan is', 'pricing', 'target', 'audience', 'positioning', 'learned', 'realized', 'important', 'remember this', 'key insight', 'our approach'];
+  const isKnowledgeWorthy = knowledgeKeywords.some(kw => (userMessage + reply).toLowerCase().includes(kw));
+  if (isKnowledgeWorthy && reply.length > 100) {
+    try {
+      // Use AI to determine if this is worth saving and extract a clean summary
+      const saveCheck = await client.messages.create({
+        model: 'claude-opus-4-6',
+        max_tokens: 200,
+        messages: [{
+          role: 'user',
+          content: 'Is this conversation exchange worth saving to a knowledge base? If yes, reply with:\nCATEGORY: [one of: strategy, business, product, audience, pricing, people, ideas, other]\nTITLE: [short title]\nSUMMARY: [2-3 sentence summary]\nTAGS: [comma separated]\n\nIf not worth saving, reply with just: SKIP\n\nExchange:\nJosh: ' + userMessage.substring(0, 200) + '\nAJ: ' + reply.substring(0, 200)
+        }]
+      });
+      const decision = saveCheck.content[0].text.trim();
+      if (!decision.startsWith('SKIP')) {
+        const catMatch = decision.match(/CATEGORY:\s*(.+)/i);
+        const titleMatch = decision.match(/TITLE:\s*(.+)/i);
+        const summaryMatch = decision.match(/SUMMARY:\s*([\s\S]+?)(?=TAGS:|$)/i);
+        const tagsMatch = decision.match(/TAGS:\s*(.+)/i);
+        if (catMatch && titleMatch && summaryMatch) {
+          await saveKnowledge(
+            catMatch[1].trim(),
+            titleMatch[1].trim(),
+            summaryMatch[1].trim(),
+            tagsMatch?.[1]?.trim() || ''
+          );
+        }
+      }
+    } catch(e) { console.error('Auto-knowledge save error:', e.message); }
   }
 
   return reply;
@@ -382,6 +532,43 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     if (textLower === '/memory') {
       const mems = await getActiveMemories();
       await bot.sendMessage(chatId, mems ? 'Active memory:\n\n' + mems : 'Nothing saved to memory yet.');
+      return;
+    }
+
+    if (textLower === '/knowledge' || textLower === '/kb') {
+      const kb = await getAllKnowledge();
+      await bot.sendMessage(chatId, 'Knowledge Base:\n\n' + kb);
+      return;
+    }
+
+    if (textLower.startsWith('/kbsave ')) {
+      // Manual save: /kbsave category | title | content
+      const parts = text.replace(/^\/kbsave /i, '').split('|').map(s => s.trim());
+      if (parts.length >= 3) {
+        await saveKnowledge(parts[0], parts[1], parts[2], parts[3] || '');
+        await bot.sendMessage(chatId, 'Saved to knowledge base: ' + parts[1]);
+      } else {
+        await bot.sendMessage(chatId, 'Format: /kbsave category | title | content');
+      }
+      return;
+    }
+
+    if (textLower.startsWith('/kbsearch ')) {
+      const query = text.replace(/^\/kbsearch /i, '').trim();
+      const results = await searchKnowledge(query);
+      if (results.length === 0) {
+        await bot.sendMessage(chatId, 'Nothing found for: ' + query);
+      } else {
+        const msg = results.map(r => '[' + r.category + '] ' + r.title + ':\n' + r.content.substring(0, 200)).join('\n\n');
+        await bot.sendMessage(chatId, 'Found ' + results.length + ' results:\n\n' + msg);
+      }
+      return;
+    }
+
+    if (textLower.startsWith('/kbdelete ')) {
+      const title = text.replace(/^\/kbdelete /i, '').trim();
+      const { rowCount } = await pool.query("DELETE FROM knowledge WHERE LOWER(title) LIKE LOWER($1)", ['%' + title + '%']);
+      await bot.sendMessage(chatId, rowCount > 0 ? 'Deleted: ' + title : 'Nothing found to delete.');
       return;
     }
 
