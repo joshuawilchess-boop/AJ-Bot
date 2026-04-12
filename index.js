@@ -1330,7 +1330,7 @@ function buildGraph(data) {
   edges = [];
 
   // Core AJ node
-  const core = { id: 'core', type: 'core', label: 'AJ', sublabel: '@AJ_agentic', x: 0, y: 0, r: 18, color: '#00ff88', vx: 0, vy: 0, fixed: true, data: { title: 'AJ — Central Brain', content: 'The core of AJ\'s second brain. All knowledge, conversations, and X posts connect here.' } };
+  const core = { id: 'core', type: 'core', label: 'AJ', sublabel: '@AJ_agentic', x: 0, y: 0, r: 18, color: '#00ff88', vx: 0, vy: 0, fixed: true, data: { title: 'AJ — Central Brain', content: "The core of AJ's second brain. All knowledge, conversations, and X posts connect here.' } };
   nodes.push(core);
 
   // Category cluster nodes
