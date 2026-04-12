@@ -636,18 +636,21 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     if (textLower === '/xview') {
       try {
-        const { TwitterApi } = require('twitter-api-v2');
-        const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
-        const me = await tw.v2.me();
-        const timeline = await tw.v2.userTimeline(me.data.id, { max_results: 10, 'tweet.fields': ['created_at'] });
-        const tweets = timeline.data?.data || [];
-        if (tweets.length === 0) { await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet.'); return; }
+        const { rows } = await pool.query(
+          "SELECT content, tweet_id, post_type, source, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 15"
+        );
+        if (rows.length === 0) { await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet.'); return; }
         let msg = '@AJ_agentic recent posts:\n\n';
-        tweets.forEach((t, i) => { msg += (i + 1) + '. ' + t.text.substring(0, 100) + '\nhttps://x.com/AJ_agentic/status/' + t.id + '\n\n'; });
+        rows.forEach((t, i) => {
+          const tag = t.source === 'autonomous' ? '[auto] ' : '';
+          const type = t.post_type ? '[' + t.post_type + '] ' : '';
+          const link = t.tweet_id ? '\nhttps://x.com/AJ_agentic/status/' + t.tweet_id : '';
+          const when = t.posted_at ? ' (' + new Date(t.posted_at).toLocaleDateString() + ')' : '';
+          msg += (i + 1) + '. ' + tag + type + when + '\n' + t.content.substring(0, 120) + link + '\n\n';
+        });
         await bot.sendMessage(chatId, msg);
       } catch (e) {
-        const xCtx = await getXPostContext();
-        await bot.sendMessage(chatId, 'From my records:\n\n' + xCtx);
+        await bot.sendMessage(chatId, 'Could not load posts: ' + e.message);
       }
       return;
     }
