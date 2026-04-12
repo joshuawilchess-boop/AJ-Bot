@@ -652,6 +652,34 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    if (textLower === '/watchlist') {
+      const { rows } = await pool.query('SELECT username FROM x_watchlist ORDER BY added_at DESC');
+      if (rows.length === 0) {
+        await bot.sendMessage(chatId, 'Watchlist is empty. Use /watch @username to add accounts.');
+      } else {
+        await bot.sendMessage(chatId, 'Watching:\n\n' + rows.map(r => '@' + r.username).join('\n'));
+      }
+      return;
+    }
+
+    if (textLower.startsWith('/watch ')) {
+      const username = text.replace(/^\/watch /i, '').replace(/^@/, '').trim().toLowerCase();
+      if (!username) { await bot.sendMessage(chatId, 'Usage: /watch @username'); return; }
+      await pool.query(
+        'INSERT INTO x_watchlist (username) VALUES ($1) ON CONFLICT (username) DO NOTHING',
+        [username]
+      );
+      await bot.sendMessage(chatId, 'Added @' + username + ' to watchlist.');
+      return;
+    }
+
+    if (textLower.startsWith('/unwatch ')) {
+      const username = text.replace(/^\/unwatch /i, '').replace(/^@/, '').trim().toLowerCase();
+      const { rowCount } = await pool.query('DELETE FROM x_watchlist WHERE username = $1', [username]);
+      await bot.sendMessage(chatId, rowCount > 0 ? 'Removed @' + username + ' from watchlist.' : '@' + username + ' was not in the watchlist.');
+      return;
+    }
+
     if (textLower === '/xscan') {
       await bot.sendMessage(chatId, 'Scanning for viral posts in your niche...');
       await xEngine.scanViralPosts();
