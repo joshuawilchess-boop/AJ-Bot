@@ -728,6 +728,8 @@ function startSchedules() {
   cron.schedule('0 9 * * 2', weeklyThread, { timezone: 'America/Chicago' });
   cron.schedule('*/30 * * * *', checkMentions, { timezone: 'America/Chicago' });
   cron.schedule('0 9,13,19 * * *', scanViralPosts, { timezone: 'America/Chicago' });
+  cron.schedule('0 */2 * * *', outboundEngagementScan, { timezone: 'America/Chicago' });
+  cron.schedule('*/90 * * * *', autonomousPostCheck, { timezone: 'America/Chicago' });
   console.log('X engine ready @AJ_agentic');
 }
 
@@ -745,5 +747,7 @@ module.exports = {
   aiNewsPost,
   checkMentions,
   scanViralPosts,
+  outboundEngagementScan,
+  autonomousPostCheck,
   startSchedules
 };
