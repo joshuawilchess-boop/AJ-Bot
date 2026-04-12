@@ -1296,13 +1296,26 @@ function resize() {
   W = canvas.width = window.innerWidth;
   H = canvas.height = window.innerHeight;
 }
-window.addEventListener('resize', () => { resize(); if (nodes.length) layout(); });
+window.addEventListener('resize', () => {
+  resize();
+  if (nodes.length) {
+    transform.x = W / 2;
+    transform.y = H / 2;
+  }
+});
 resize();
 
 async function loadData() {
-  const data = await fetch('/api/graph').then(r => r.json());
-  buildGraph(data);
-  updateStats(data);
+  try {
+    const data = await fetch('/api/graph').then(r => r.json());
+    if (!data || !data.knowledge) { console.error('Bad data from /api/graph:', data); return; }
+    // Make sure canvas is sized
+    resize();
+    buildGraph(data);
+    updateStats(data);
+  } catch(e) {
+    console.error('loadData error:', e);
+  }
 }
 
 function updateStats(data) {
@@ -1413,13 +1426,18 @@ function buildGraph(data) {
     edges.push({ from: 'core', to: n.id, strength: 0.6 });
   });
 
+  // Ensure W and H are set
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
   transform.x = W / 2;
   transform.y = H / 2;
+  transform.scale = 0.8; // slight zoom out so full graph is visible
 
   // Run force simulation
-  for (let i = 0; i < 200; i++) simulate(0.1);
+  for (let i = 0; i < 300; i++) simulate(0.1);
+  if (animFrame) cancelAnimationFrame(animFrame);
   render();
-  requestAnimationFrame(animate);
+  animFrame = requestAnimationFrame(animate);
 }
 
 function simulate(alpha) {
