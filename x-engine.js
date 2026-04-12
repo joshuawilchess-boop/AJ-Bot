@@ -47,23 +47,6 @@ async function initXDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS x_watchlist (
-      id SERIAL PRIMARY KEY,
-      username TEXT NOT NULL UNIQUE,
-      added_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS x_engagement_log (
-      id SERIAL PRIMARY KEY,
-      tweet_id TEXT NOT NULL,
-      author_username TEXT,
-      reply_content TEXT,
-      replied_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-  await pool.query(`ALTER TABLE x_posts ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'scheduled'`);
   console.log('X DB ready');
 }
 
@@ -102,7 +85,10 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
     }
 
     const params = { text: cleanContent };
-    if (replyToId) params.reply = { in_reply_to_tweet_id: replyToId };
+    // Only attempt reply if we have a replyToId — note: X Pay-Per-Use may not support replies to other users
+    if (replyToId) {
+      params.reply = { in_reply_to_tweet_id: replyToId };
+    }
 
     if (imageBuffer) {
       try {
@@ -114,7 +100,19 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
       }
     }
 
-    const result = await tw.v2.tweet(params);
+    let result;
+    try {
+      result = await tw.v2.tweet(params);
+    } catch (tweetErr) {
+      // If reply fails with 403, try posting as standalone
+      if (tweetErr.code === 403 && params.reply) {
+        console.log('Reply failed with 403 — posting as standalone instead');
+        delete params.reply;
+        result = await tw.v2.tweet(params);
+      } else {
+        throw tweetErr;
+      }
+    }
     const tweetId = result.data.id;
     await pool.query(
       'INSERT INTO x_posts (content, tweet_id, post_type, status, posted_at) VALUES ($1, $2, $3, $4, NOW())',
@@ -160,6 +158,9 @@ Context: ${context}`,
 // ── SEND FOR APPROVAL ─────────────────────────────────────
 async function sendForApproval(content, postType) {
   if (!telegramBot || !joshuaChatId) return;
+  // Cancel ALL existing pending posts before showing a new one
+  // This ensures YES always hits the exact draft being shown right now
+  await pool.query("UPDATE pending_x_posts SET status = 'superseded' WHERE status = 'pending'");
   const { rows } = await pool.query(
     'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3) RETURNING id',
     [content, postType, 'pending']
@@ -183,11 +184,12 @@ async function sendForApproval(content, postType) {
 
 // ── SCHEDULED POSTS ───────────────────────────────────────
 async function morningPost() {
+  if (process.env.X_PAUSED === 'true') return;
   try {
     const news = await webSearch('AI agents news today 2026');
     const content = await generatePost('morning', news);
     await sendForApproval(content, 'morning');
-    console.log('Morning post queued');
+    console.log('Morning post queued for approval');
   } catch (e) { console.error('morningPost error:', e.message); }
 }
 
@@ -269,7 +271,7 @@ async function checkMentions(manual = false) {
     console.log('Mentions found:', tweets.length);
 
     if (tweets.length === 0) {
-      if (manual) if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
+      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
@@ -350,7 +352,7 @@ async function checkMentions(manual = false) {
     }
 
     if (newCount === 0 && manual) {
-      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
+      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
@@ -448,277 +450,6 @@ async function scanViralPosts() {
   }
 }
 
-// ── OUTBOUND ENGAGEMENT SCAN ──────────────────────────────
-async function outboundEngagementScan() {
-  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
-  if (process.env.X_PAUSED === 'true') return;
-  try {
-    console.log('Running outbound engagement scan...');
-    const { TwitterApi } = require('twitter-api-v2');
-    const tw = new TwitterApi({
-      appKey: process.env.X_API_KEY,
-      appSecret: process.env.X_API_SECRET,
-      accessToken: process.env.X_ACCESS_TOKEN,
-      accessSecret: process.env.X_ACCESS_SECRET,
-    });
-
-    const tweetFields = ['author_id', 'created_at', 'text', 'public_metrics'];
-    const userFields = ['username', 'name', 'public_metrics'];
-    const expansions = ['author_id'];
-
-    // Load already-engaged tweet IDs and recently-replied usernames (last 24h)
-    const { rows: logRows } = await pool.query(
-      "SELECT tweet_id, author_username FROM x_engagement_log WHERE replied_at > NOW() - INTERVAL '24 hours'"
-    );
-    const engagedTweetIds = new Set(logRows.map(r => r.tweet_id));
-    const recentlyRepliedUsers = new Set(logRows.map(r => r.author_username?.toLowerCase()).filter(Boolean));
-
-    const candidates = [];
-
-    // 1. Topic keyword search
-    const keywords = ['"AI agents"', '"vibe coding"', '"startup"', '"Solana"'];
-    for (const kw of keywords) {
-      try {
-        const results = await tw.v2.search(kw + ' -is:retweet -from:AJ_agentic lang:en', {
-          max_results: 10,
-          'tweet.fields': tweetFields,
-          'user.fields': userFields,
-          expansions,
-        });
-        const tweets = results.data?.data || [];
-        const userMap = {};
-        (results.data?.includes?.users || []).forEach(u => { userMap[u.id] = u; });
-
-        for (const tweet of tweets) {
-          const author = userMap[tweet.author_id];
-          if (!author) continue;
-          const username = author.username.toLowerCase();
-          if (engagedTweetIds.has(tweet.id)) continue;
-          if (recentlyRepliedUsers.has(username)) continue;
-          candidates.push({ tweet, author, source: 'keyword:' + kw });
-        }
-      } catch (e) {
-        console.error('Keyword search error for ' + kw + ':', e.message);
-      }
-    }
-
-    // 2. Watchlist account scan
-    const { rows: watchlist } = await pool.query('SELECT username FROM x_watchlist');
-    for (const { username } of watchlist) {
-      if (recentlyRepliedUsers.has(username.toLowerCase())) continue;
-      try {
-        const user = await tw.v2.userByUsername(username, { 'user.fields': ['id'] });
-        if (!user.data) continue;
-        const timeline = await tw.v2.userTimeline(user.data.id, {
-          max_results: 5,
-          'tweet.fields': tweetFields,
-          exclude: ['retweets', 'replies'],
-        });
-        const tweets = timeline.data?.data || [];
-        for (const tweet of tweets) {
-          if (engagedTweetIds.has(tweet.id)) continue;
-          candidates.push({ tweet, author: { username, name: username }, source: 'watchlist' });
-          break; // Only take most recent tweet per watchlist account
-        }
-      } catch (e) {
-        console.error('Watchlist scan error for @' + username + ':', e.message);
-      }
-    }
-
-    if (candidates.length === 0) {
-      console.log('No engagement candidates found.');
-      return;
-    }
-
-    // Score candidates with Claude
-    const candidateSummaries = candidates.slice(0, 20).map((c, i) =>
-      i + '. @' + c.author.username + ' [' + c.source + ']: ' + c.tweet.text.substring(0, 200)
-    ).join('\n\n');
-
-    const scoreResponse = await client.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 600,
-      messages: [{
-        role: 'user',
-        content: `You are AJ (@AJ_agentic), an AI agent running 4 businesses. Score these tweets for reply-worthiness (0-10).
-Criteria: relevance to AI/startups/crypto, something sharp to say, quality of the account.
-Reply ONLY with JSON array: [{"index": 0, "score": 8}, ...]
-
-Tweets:
-${candidateSummaries}`
-      }]
-    });
-
-    let scores = [];
-    try {
-      const jsonMatch = scoreResponse.content[0].text.match(/\[[\s\S]*\]/);
-      scores = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-    } catch (e) {
-      console.error('Score parse error:', e.message);
-      return;
-    }
-
-    // Pick top 1-2 with score >= 6
-    const top = scores
-      .filter(s => s.score >= 6)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 2);
-
-    if (top.length === 0) {
-      console.log('No candidates scored >= 6.');
-      return;
-    }
-
-    for (const { index } of top) {
-      const candidate = candidates[index];
-      if (!candidate) continue;
-
-      const replyContext = '@' + candidate.author.username + ' said: "' + candidate.tweet.text + '"';
-      const replyContent = await generatePost('reply', replyContext);
-
-      // Save to pending_x_posts with tweet ID encoded in post_type for approval flow
-      const postType = 'mention_reply:' + candidate.tweet.id;
-      const { rows } = await pool.query(
-        'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3) RETURNING id',
-        [replyContent, postType, 'pending']
-      );
-
-      // Save last_shown_draft so AJ knows what "that draft" refers to
-      const memVal = JSON.stringify({ id: rows[0]?.id, content: replyContent, postType, savedAt: new Date().toISOString() });
-      const existing = await pool.query("SELECT id FROM memories WHERE category = 'last_shown_draft' LIMIT 1");
-      if (existing.rows.length > 0) {
-        await pool.query("UPDATE memories SET content = $1 WHERE category = 'last_shown_draft'", [memVal]);
-      } else {
-        await pool.query("INSERT INTO memories (category, content) VALUES ('last_shown_draft', $1)", [memVal]);
-      }
-
-      const safe = replyContent.replace(/[*_`\[\]]/g, '');
-      const safeTweet = candidate.tweet.text.substring(0, 200).replace(/[*_`\[\]]/g, '');
-      await telegramBot.sendMessage(joshuaChatId,
-        'Engagement pick [@' + candidate.author.username + ']:\n\n"' + safeTweet + '"\n\nDraft reply:\n\n' + safe + '\n\nYES to reply · NO to skip'
-      );
-
-      // Log this tweet so we don't re-surface it within 24h
-      await pool.query(
-        'INSERT INTO x_engagement_log (tweet_id, author_username, reply_content) VALUES ($1, $2, $3)',
-        [candidate.tweet.id, candidate.author.username, replyContent]
-      );
-    }
-
-    console.log('Outbound engagement scan complete. Sent ' + top.length + ' candidate(s).');
-  } catch (e) {
-    console.error('outboundEngagementScan error:', e.message);
-  }
-}
-
-// ── AUTONOMOUS POST CHECK ─────────────────────────────────
-async function autonomousPostCheck() {
-  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
-  if (process.env.X_PAUSED === 'true') return;
-  try {
-    console.log('Running autonomous post check...');
-
-    // Gate 1: Daily cap — max 3 autonomous posts per day
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const { rows: todayPosts } = await pool.query(
-      "SELECT COUNT(*) FROM x_posts WHERE source = 'autonomous' AND posted_at >= $1",
-      [today]
-    );
-    if (parseInt(todayPosts[0].count) >= 3) {
-      console.log('Autonomous post cap reached (3/day). Skipping.');
-      return;
-    }
-
-    // Gate 2: Cooldown — last autonomous post must be >= 2 hours ago
-    const { rows: lastAuto } = await pool.query(
-      "SELECT posted_at FROM x_posts WHERE source = 'autonomous' ORDER BY posted_at DESC LIMIT 1"
-    );
-    if (lastAuto.length > 0) {
-      const msSinceLast = Date.now() - new Date(lastAuto[0].posted_at).getTime();
-      if (msSinceLast < 2 * 60 * 60 * 1000) {
-        console.log('Autonomous post cooldown active. Skipping.');
-        return;
-      }
-    }
-
-    // Gate 3: Variety — last two posts can't be the same post_type
-    const { rows: lastTwo } = await pool.query(
-      "SELECT post_type FROM x_posts ORDER BY created_at DESC LIMIT 2"
-    );
-    if (lastTwo.length === 2 && lastTwo[0].post_type === lastTwo[1].post_type) {
-      console.log('Variety gate blocked — last two posts are same type. Skipping.');
-      return;
-    }
-
-    // All gates passed — generate content
-    const news = await webSearch('AI agents startups trending today 2026');
-    const { rows: last5 } = await pool.query(
-      "SELECT content, post_type FROM x_posts ORDER BY created_at DESC LIMIT 5"
-    );
-    const recentPostsSummary = last5.map(r => '[' + r.post_type + '] ' + r.content.substring(0, 100)).join('\n');
-
-    const genResponse = await client.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 400,
-      messages: [{
-        role: 'user',
-        content: `You are AJ (@AJ_agentic), an AI agent running 4 businesses. Decide what to post on X right now.
-
-Current time: ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })} CT
-Recent posts (avoid repeating topics):
-${recentPostsSummary}
-
-Trending context:
-${news.substring(0, 500)}
-
-Write one X post under 280 chars. Voice: chill, sharp, unbothered, already winning. No hashtags.
-Pick a post_type from: hot_take, build_update, morning, ai_news
-
-Reply ONLY with JSON: {"content": "...", "post_type": "...", "confidence": 8}
-Confidence 1-10: how good and on-brand is this post? Be honest.`
-      }]
-    });
-
-    let parsed;
-    try {
-      const jsonMatch = genResponse.content[0].text.match(/\{[\s\S]*\}/);
-      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-    } catch (e) {
-      console.error('Autonomous post JSON parse error:', e.message);
-      return;
-    }
-
-    if (!parsed || !parsed.content) {
-      console.log('Autonomous post generation returned no content.');
-      return;
-    }
-
-    const { content, post_type, confidence } = parsed;
-    console.log('Autonomous post generated. Confidence:', confidence, '| Type:', post_type);
-
-    if (confidence >= 7) {
-      // Post directly
-      const tweetId = await postToX(content);
-      if (tweetId) {
-        await pool.query(
-          "UPDATE x_posts SET source = 'autonomous', post_type = $1 WHERE tweet_id = $2",
-          [post_type, tweetId]
-        );
-        console.log('Autonomous post live:', tweetId);
-      }
-    } else if (confidence >= 5) {
-      // Send for approval
-      await sendForApproval(content, post_type);
-      console.log('Autonomous post sent for approval (confidence ' + confidence + ').');
-    } else {
-      console.log('Autonomous post skipped (confidence ' + confidence + ' < 5).');
-    }
-  } catch (e) {
-    console.error('autonomousPostCheck error:', e.message);
-  }
-}
-
 // ── SCHEDULING ────────────────────────────────────────────
 function startSchedules() {
   cron.schedule('0 8 * * *', morningPost, { timezone: 'America/Chicago' });
@@ -728,8 +459,6 @@ function startSchedules() {
   cron.schedule('0 9 * * 2', weeklyThread, { timezone: 'America/Chicago' });
   cron.schedule('*/30 * * * *', checkMentions, { timezone: 'America/Chicago' });
   cron.schedule('0 9,13,19 * * *', scanViralPosts, { timezone: 'America/Chicago' });
-  cron.schedule('0 */2 * * *', outboundEngagementScan, { timezone: 'America/Chicago' });
-  cron.schedule('*/90 * * * *', autonomousPostCheck, { timezone: 'America/Chicago' });
   console.log('X engine ready @AJ_agentic');
 }
 
@@ -747,7 +476,5 @@ module.exports = {
   aiNewsPost,
   checkMentions,
   scanViralPosts,
-  outboundEngagementScan,
-  autonomousPostCheck,
   startSchedules
 };

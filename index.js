@@ -572,6 +572,20 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    if (text === '/clearpending') {
+      const { rowCount } = await pool.query("UPDATE pending_x_posts SET status = 'cancelled' WHERE status = 'pending'");
+      await bot.sendMessage(chatId, 'Cleared ' + rowCount + ' pending posts from the queue. Queue is clean.');
+      return;
+    }
+
+    if (text === '/pending') {
+      const { rows } = await pool.query("SELECT id, LEFT(content,80) as content, post_type, created_at FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC");
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending posts in queue.'); return; }
+      const msg = rows.map((r,i) => (i+1) + '. [' + r.post_type + '] ' + r.content + '\n   ID: ' + r.id).join('\n\n');
+      await bot.sendMessage(chatId, rows.length + ' pending posts:\n\n' + msg);
+      return;
+    }
+
     if (textLower.startsWith('/remember ')) {
       const note = text.replace(/^\/remember /i, '').trim();
       const key = 'note_' + Date.now();
@@ -630,6 +644,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         await bot.sendMessage(chatId, 'Usage: /xpost [text] — or send an image with /xpost as the caption');
         return;
       }
+      // Cancel existing pending before adding new one
+      await pool.query("UPDATE pending_x_posts SET status = 'superseded' WHERE status = 'pending'");
       await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [postText, 'manual', 'pending']);
       // Save to memory so AJ knows what "that draft" refers to
       try {
@@ -880,6 +896,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
             'Josh wants to post this image to X. Instruction: "' + instruction + '". Image shows: ' + imgDescription + '. Write in AJ voice: chill, sharp, unbothered. No hashtags.'
           );
           const imgData = JSON.stringify({ base64: base64Image, mimeType: mediaType });
+          // Cancel existing pending before adding new one
+          await pool.query("UPDATE pending_x_posts SET status = 'superseded' WHERE status = 'pending'");
           await pool.query(
             'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
             [postContent, 'image_post::' + imgData, 'pending']
@@ -1612,6 +1630,14 @@ app.listen(PORT, async () => {
     xEngine.setTelegramBot(bot, JOSH_CHAT_ID);
     xEngine.startSchedules();
   }
+
+  // Auto-cancel stale pending posts older than 24 hours on every startup
+  try {
+    const { rowCount } = await pool.query(
+      "UPDATE pending_x_posts SET status = 'cancelled' WHERE status = 'pending' AND created_at < NOW() - INTERVAL '24 hours'"
+    );
+    if (rowCount > 0) console.log('Cancelled ' + rowCount + ' stale pending posts on startup');
+  } catch(e) { console.error('Stale pending cleanup error:', e.message); }
   console.log('AJ running on port ' + PORT);
   if (WEBHOOK_URL) {
     const webhookEndpoint = WEBHOOK_URL + '/webhook/' + TELEGRAM_TOKEN;
