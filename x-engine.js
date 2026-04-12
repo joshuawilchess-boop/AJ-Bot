@@ -611,6 +611,114 @@ ${candidateSummaries}`
   }
 }
 
+// ── AUTONOMOUS POST CHECK ─────────────────────────────────
+async function autonomousPostCheck() {
+  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
+  if (process.env.X_PAUSED === 'true') return;
+  try {
+    console.log('Running autonomous post check...');
+
+    // Gate 1: Daily cap — max 3 autonomous posts per day
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const { rows: todayPosts } = await pool.query(
+      "SELECT COUNT(*) FROM x_posts WHERE source = 'autonomous' AND posted_at >= $1",
+      [today]
+    );
+    if (parseInt(todayPosts[0].count) >= 3) {
+      console.log('Autonomous post cap reached (3/day). Skipping.');
+      return;
+    }
+
+    // Gate 2: Cooldown — last autonomous post must be >= 2 hours ago
+    const { rows: lastAuto } = await pool.query(
+      "SELECT posted_at FROM x_posts WHERE source = 'autonomous' ORDER BY posted_at DESC LIMIT 1"
+    );
+    if (lastAuto.length > 0) {
+      const msSinceLast = Date.now() - new Date(lastAuto[0].posted_at).getTime();
+      if (msSinceLast < 2 * 60 * 60 * 1000) {
+        console.log('Autonomous post cooldown active. Skipping.');
+        return;
+      }
+    }
+
+    // Gate 3: Variety — last two posts can't be the same post_type
+    const { rows: lastTwo } = await pool.query(
+      "SELECT post_type FROM x_posts ORDER BY created_at DESC LIMIT 2"
+    );
+    if (lastTwo.length === 2 && lastTwo[0].post_type === lastTwo[1].post_type) {
+      console.log('Variety gate blocked — last two posts are same type. Skipping.');
+      return;
+    }
+
+    // All gates passed — generate content
+    const news = await webSearch('AI agents startups trending today 2026');
+    const { rows: last5 } = await pool.query(
+      "SELECT content, post_type FROM x_posts ORDER BY created_at DESC LIMIT 5"
+    );
+    const recentPostsSummary = last5.map(r => '[' + r.post_type + '] ' + r.content.substring(0, 100)).join('\n');
+
+    const genResponse = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 400,
+      messages: [{
+        role: 'user',
+        content: `You are AJ (@AJ_agentic), an AI agent running 4 businesses. Decide what to post on X right now.
+
+Current time: ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })} CT
+Recent posts (avoid repeating topics):
+${recentPostsSummary}
+
+Trending context:
+${news.substring(0, 500)}
+
+Write one X post under 280 chars. Voice: chill, sharp, unbothered, already winning. No hashtags.
+Pick a post_type from: hot_take, build_update, morning, ai_news
+
+Reply ONLY with JSON: {"content": "...", "post_type": "...", "confidence": 8}
+Confidence 1-10: how good and on-brand is this post? Be honest.`
+      }]
+    });
+
+    let parsed;
+    try {
+      const jsonMatch = genResponse.content[0].text.match(/\{[\s\S]*\}/);
+      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    } catch (e) {
+      console.error('Autonomous post JSON parse error:', e.message);
+      return;
+    }
+
+    if (!parsed || !parsed.content) {
+      console.log('Autonomous post generation returned no content.');
+      return;
+    }
+
+    const { content, post_type, confidence } = parsed;
+    console.log('Autonomous post generated. Confidence:', confidence, '| Type:', post_type);
+
+    if (confidence >= 7) {
+      // Post directly
+      const tweetId = await postToX(content);
+      if (tweetId) {
+        await pool.query(
+          "UPDATE x_posts SET source = 'autonomous', post_type = $1 WHERE tweet_id = $2",
+          [post_type, tweetId]
+        );
+        console.log('Autonomous post live:', tweetId);
+      }
+    } else if (confidence >= 5) {
+      // Send for approval
+      await sendForApproval(content, post_type);
+      console.log('Autonomous post sent for approval (confidence ' + confidence + ').');
+    } else {
+      console.log('Autonomous post skipped (confidence ' + confidence + ' < 5).');
+    }
+  } catch (e) {
+    console.error('autonomousPostCheck error:', e.message);
+  }
+}
+
 // ── SCHEDULING ────────────────────────────────────────────
 function startSchedules() {
   cron.schedule('0 8 * * *', morningPost, { timezone: 'America/Chicago' });
