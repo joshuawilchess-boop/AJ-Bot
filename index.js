@@ -225,6 +225,57 @@ async function getAllKnowledge() {
   } catch (e) { return 'Could not load knowledge base.'; }
 }
 
+// ── URL FETCHER ──────────────────────────────────────────
+async function fetchUrl(url) {
+  try {
+    const https = require('https');
+    const http = require('http');
+    const lib = url.startsWith('https') ? https : http;
+    return await new Promise((resolve, reject) => {
+      const req = lib.get(url, { 
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AJBot/1.0)' },
+        timeout: 8000
+      }, res => {
+        // Follow redirects
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          fetchUrl(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          let text = Buffer.concat(chunks).toString('utf8');
+          // Strip HTML tags, scripts, styles
+          text = text
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .substring(0, 3000);
+          resolve(text);
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    });
+  } catch(e) {
+    console.error('fetchUrl error:', e.message);
+    return null;
+  }
+}
+
+// Extract tweet ID from any X/Twitter URL
+function extractTweetId(url) {
+  const match = url.match(/(?:twitter|x)\.com\/\w+\/status\/(\d+)/);
+  return match ? match[1] : null;
+}
+
 // ── X POST CONTEXT ────────────────────────────────────────
 async function getXPostContext() {
   try {
@@ -636,50 +687,19 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     if (textLower === '/xview') {
       try {
-        const { rows } = await pool.query(
-          "SELECT content, tweet_id, post_type, source, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 15"
-        );
-        if (rows.length === 0) { await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet.'); return; }
+        const { TwitterApi } = require('twitter-api-v2');
+        const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
+        const me = await tw.v2.me();
+        const timeline = await tw.v2.userTimeline(me.data.id, { max_results: 10, 'tweet.fields': ['created_at'] });
+        const tweets = timeline.data?.data || [];
+        if (tweets.length === 0) { await bot.sendMessage(chatId, 'No posts on @AJ_agentic yet.'); return; }
         let msg = '@AJ_agentic recent posts:\n\n';
-        rows.forEach((t, i) => {
-          const tag = t.source === 'autonomous' ? '[auto] ' : '';
-          const type = t.post_type ? '[' + t.post_type + '] ' : '';
-          const link = t.tweet_id ? '\nhttps://x.com/AJ_agentic/status/' + t.tweet_id : '';
-          const when = t.posted_at ? ' (' + new Date(t.posted_at).toLocaleDateString() + ')' : '';
-          msg += (i + 1) + '. ' + tag + type + when + '\n' + t.content.substring(0, 120) + link + '\n\n';
-        });
+        tweets.forEach((t, i) => { msg += (i + 1) + '. ' + t.text.substring(0, 100) + '\nhttps://x.com/AJ_agentic/status/' + t.id + '\n\n'; });
         await bot.sendMessage(chatId, msg);
       } catch (e) {
-        await bot.sendMessage(chatId, 'Could not load posts: ' + e.message);
+        const xCtx = await getXPostContext();
+        await bot.sendMessage(chatId, 'From my records:\n\n' + xCtx);
       }
-      return;
-    }
-
-    if (textLower === '/watchlist') {
-      const { rows } = await pool.query('SELECT username FROM x_watchlist ORDER BY added_at DESC');
-      if (rows.length === 0) {
-        await bot.sendMessage(chatId, 'Watchlist is empty. Use /watch @username to add accounts.');
-      } else {
-        await bot.sendMessage(chatId, 'Watching:\n\n' + rows.map(r => '@' + r.username).join('\n'));
-      }
-      return;
-    }
-
-    if (textLower.startsWith('/watch ')) {
-      const username = text.replace(/^\/watch /i, '').replace(/^@/, '').trim().toLowerCase();
-      if (!username) { await bot.sendMessage(chatId, 'Usage: /watch @username'); return; }
-      await pool.query(
-        'INSERT INTO x_watchlist (username) VALUES ($1) ON CONFLICT (username) DO NOTHING',
-        [username]
-      );
-      await bot.sendMessage(chatId, 'Added @' + username + ' to watchlist.');
-      return;
-    }
-
-    if (textLower.startsWith('/unwatch ')) {
-      const username = text.replace(/^\/unwatch /i, '').replace(/^@/, '').trim().toLowerCase();
-      const { rowCount } = await pool.query('DELETE FROM x_watchlist WHERE username = $1', [username]);
-      await bot.sendMessage(chatId, rowCount > 0 ? 'Removed @' + username + ' from watchlist.' : '@' + username + ' was not in the watchlist.');
       return;
     }
 
@@ -766,9 +786,18 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         } catch (e) { console.error('Failed to parse image data:', e.message); }
       } else if (pending.post_type?.includes(':')) {
         const parts = pending.post_type.split(':');
-        // Only treat as replyToId if it looks like a tweet ID (numeric)
         const possibleId = parts[parts.length - 1];
         if (/^\d+$/.test(possibleId)) replyToId = possibleId;
+      }
+
+      // If no replyToId found in post_type, check memory for a pending reply tweet ID
+      if (!replyToId) {
+        const savedTweetId = await getMemory('pending_reply_tweet_id');
+        if (savedTweetId && /^\d+$/.test(savedTweetId)) {
+          replyToId = savedTweetId;
+          // Clear it after use
+          await saveMemory('pending_reply_tweet_id', '');
+        }
       }
 
       const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
@@ -887,7 +916,53 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     // ── DEFAULT: AJ CONVERSATION ─────────────────────────
-    const reply = await getAJResponse(chatId, text);
+    // Detect URLs in message — fetch content so AJ can actually read them
+    let enrichedMessage = text;
+    const urlMatch = text.match(/https?:\/\/[^\s]+/);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      const tweetId = extractTweetId(url);
+
+      await bot.sendChatAction(chatId, 'typing');
+
+      if (tweetId) {
+        // It's an X/Twitter link — fetch via X API for best results
+        try {
+          const { TwitterApi } = require('twitter-api-v2');
+          const tw = new TwitterApi({
+            appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET,
+            accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET
+          });
+          const tweet = await tw.v2.singleTweet(tweetId, {
+            'tweet.fields': ['author_id', 'text', 'created_at', 'public_metrics'],
+            'user.fields': ['username', 'name'],
+            expansions: ['author_id']
+          });
+          const author = tweet.includes?.users?.[0];
+          const metrics = tweet.data?.public_metrics;
+          const tweetText = tweet.data?.text || '';
+          const authorStr = author ? '@' + author.username + ' (' + author.name + ')' : 'unknown';
+          const metricsStr = metrics ? metrics.like_count + ' likes, ' + metrics.retweet_count + ' retweets, ' + metrics.reply_count + ' replies' : '';
+          enrichedMessage = text + '\n\n[X POST CONTENT]\nAuthor: ' + authorStr + '\nTweet: ' + tweetText + (metricsStr ? '\nEngagement: ' + metricsStr : '') + '\nTweet ID: ' + tweetId;
+          // Save tweet ID to memory so YES can reply to it
+          await saveMemory('pending_reply_tweet_id', tweetId);
+          await saveMemory('pending_reply_author', author ? author.username : 'unknown');
+        } catch(e) {
+          console.error('Tweet fetch error:', e.message);
+          // Fallback to web fetch
+          const pageContent = await fetchUrl(url);
+          if (pageContent) enrichedMessage = text + '\n\n[PAGE CONTENT FROM ' + url + ']:\n' + pageContent.substring(0, 1500);
+        }
+      } else {
+        // Regular URL — fetch the page
+        const pageContent = await fetchUrl(url);
+        if (pageContent) {
+          enrichedMessage = text + '\n\n[PAGE CONTENT FROM ' + url + ']:\n' + pageContent.substring(0, 2000);
+        }
+      }
+    }
+
+    const reply = await getAJResponse(chatId, enrichedMessage);
     await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
 
   } catch (err) {
@@ -906,16 +981,6 @@ async function sendMorningBriefing() {
     const high = rows.filter(t => t.priority === 'high');
     const rest = rows.filter(t => t.priority !== 'high');
 
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setHours(0, 0, 0, 0);
-    const todayMidnight = new Date();
-    todayMidnight.setHours(0, 0, 0, 0);
-    const { rows: autoPosts } = await pool.query(
-      "SELECT content FROM x_posts WHERE source = 'autonomous' AND posted_at >= $1 AND posted_at < $2 ORDER BY posted_at ASC",
-      [yesterday, todayMidnight]
-    );
-
     let msg = 'Morning briefing\n\n';
     if (high.length > 0) {
       msg += 'High priority:\n' + high.map(t => '⚡ ' + t.title + ' (' + t.project + ')').join('\n') + '\n\n';
@@ -923,10 +988,6 @@ async function sendMorningBriefing() {
     if (rest.length > 0) {
       msg += 'On deck:\n' + rest.slice(0, 5).map(t => '• ' + t.title + ' — ' + t.project).join('\n');
       if (rest.length > 5) msg += '\n...and ' + (rest.length - 5) + ' more';
-    }
-    if (autoPosts.length > 0) {
-      msg += '\n\nPosted autonomously yesterday (' + autoPosts.length + '):\n' +
-        autoPosts.map((p, i) => (i + 1) + '. ' + p.content.substring(0, 100)).join('\n');
     }
     msg += '\n\nWhat are we knocking out first?';
     await bot.sendMessage(JOSH_CHAT_ID, msg);
