@@ -306,8 +306,16 @@ async function airtableRequest(method, table, body = null, recordId = null) {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => {
-          try { resolve(JSON.parse(body)); }
-          catch(e) { resolve(body); }
+          try {
+            const parsed = JSON.parse(body);
+            if (parsed.error) console.log('Airtable response error:', JSON.stringify(parsed));
+            else console.log('Airtable response OK:', method, table.substring(0,20));
+            resolve(parsed);
+          }
+          catch(e) { 
+            console.log('Airtable raw response:', body.substring(0,200));
+            resolve(body); 
+          }
         });
       });
       req.on('error', reject);
