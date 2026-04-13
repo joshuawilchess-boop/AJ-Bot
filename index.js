@@ -871,7 +871,13 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     // Only trigger post approval on explicit post-related confirmations
     // NOT on casual conversation words like "yeah", "sure", "of course"
     // YES only triggers on exact matches — never on "yes [something else]" like "yes send me the link"
-    const postYes = ['yes', 'yes post it', 'yes post', 'post it', 'go ahead and post', 'post that', 'yes go ahead', 'yes do it', 'post this'];
+    const postYes = [
+      'yes', 'yes post it', 'yes post', 'post it',
+      'go ahead and post', 'post that', 'yes go ahead',
+      'yes do it', 'post this', 'good to go', 'yes good to go',
+      'go for it', 'fire it', 'fire it off', 'send it',
+      'yes send it', 'lets go', "let's go", 'ship it', 'yes ship it'
+    ];
     const isYes = postYes.some(y => textLower.trim() === y);
 
     if (isYes) {
