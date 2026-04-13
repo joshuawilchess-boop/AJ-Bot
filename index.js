@@ -1158,6 +1158,49 @@ async function sendMorningBriefing() {
 cron.schedule('0 8 * * *', sendMorningBriefing, { timezone: 'America/Chicago' });
 
 // ── KNOWLEDGE GRAPH API ──────────────────────────────────
+app.post('/api/email-incoming', async (req, res) => {
+  res.sendStatus(200);
+  try {
+    const { from, subject, body, date, source } = req.body;
+    if (!from || !subject) return;
+
+    const isOverflow = source === 'overflow_outlook';
+    const emoji = isOverflow ? '📧' : '✉️';
+    const account = isOverflow ? 'Overflow Revive' : 'AJ Gmail';
+
+    console.log('Incoming email from Make.com:', source, subject);
+
+    // Ask AJ to analyze and draft a response
+    const emailPrompt = 'You just received an email to ' + account + '.\n\nFrom: ' + from + '\nSubject: ' + subject + '\nDate: ' + date + '\nPreview: ' + body + '\n\nAnalyze this email. Is it a lead, client reply, payment issue, spam, or general inquiry? Draft a short appropriate response if one is needed. If it is spam or a newsletter, just say IGNORE.';
+
+    const response = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 500,
+      system: 'You are AJ, an AI business agent. Analyze incoming emails and draft responses in a professional but chill tone.',
+      messages: [{ role: 'user', content: emailPrompt }]
+    });
+
+    const analysis = response.content[0].text.trim();
+
+    if (analysis.startsWith('IGNORE') || analysis.includes('spam') || analysis.includes('newsletter')) {
+      console.log('Email marked as spam/newsletter - ignoring');
+      return;
+    }
+
+    // Sync to Airtable
+    syncKnowledgeToAirtable('email', subject + ' from ' + from, body + '\n\nAJ Analysis: ' + analysis, 'email,' + source).catch(() => {});
+
+    const safeAnalysis = analysis.replace(/[*_`\[\]]/g, '').substring(0, 800);
+    const msg = emoji + ' ' + account + ' email:\n\nFrom: ' + from + '\nSubject: ' + subject + '\n\nAJ\'s take:\n' + safeAnalysis;
+
+    if (JOSH_CHAT_ID) {
+      await bot.sendMessage(JOSH_CHAT_ID, msg);
+    }
+  } catch(e) {
+    console.error('Email incoming error:', e.message);
+  }
+});
+
 app.get('/api/test-airtable', async (req, res) => {
   try {
     const result = await syncKnowledgeToAirtable(
