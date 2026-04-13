@@ -165,6 +165,8 @@ async function saveKnowledge(category, title, content, tags = '') {
       );
     }
     console.log('Knowledge saved:', title);
+    // Sync to Airtable in background
+    syncKnowledgeToAirtable(category, title, content, tags).catch(e => console.error('Airtable KB sync:', e.message));
   } catch (e) { console.error('saveKnowledge error:', e.message); }
 }
 
@@ -274,6 +276,107 @@ async function fetchUrl(url) {
 function extractTweetId(url) {
   const match = url.match(/(?:twitter|x)\.com\/\w+\/status\/(\d+)/);
   return match ? match[1] : null;
+}
+
+// ── AIRTABLE SYNC ────────────────────────────────────────
+const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appH485b932LDcBF4';
+const AIRTABLE_TOKEN = process.env.AIRTABLE_API_TOKEN;
+
+async function airtableRequest(method, table, body = null, recordId = null) {
+  if (!AIRTABLE_TOKEN) return null;
+  try {
+    const https = require('https');
+    const path = '/v0/' + AIRTABLE_BASE + '/' + encodeURIComponent(table) + (recordId ? '/' + recordId : '');
+    const data = body ? JSON.stringify(body) : null;
+    return await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.airtable.com',
+        path,
+        method,
+        headers: {
+          'Authorization': 'Bearer ' + AIRTABLE_TOKEN,
+          'Content-Type': 'application/json',
+          ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {})
+        }
+      }, res => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch(e) { resolve(body); }
+        });
+      });
+      req.on('error', reject);
+      if (data) req.write(data);
+      req.end();
+    });
+  } catch(e) {
+    console.error('Airtable error:', e.message);
+    return null;
+  }
+}
+
+async function syncKnowledgeToAirtable(category, title, content, tags) {
+  try {
+    // Check if record exists first
+    const search = await airtableRequest('GET', 'Knowledge?filterByFormula=' + encodeURIComponent('({Knowledge Title}="' + title + '")'));
+    const fields = {
+      'Knowledge Title': title,
+      'Description': content.substring(0, 500),
+      'Topic/Domain': category,
+      'Tags': tags,
+      'Last Updated': new Date().toISOString().split('T')[0]
+    };
+    if (search?.records?.length > 0) {
+      await airtableRequest('PATCH', 'Knowledge', { fields }, search.records[0].id);
+    } else {
+      await airtableRequest('POST', 'Knowledge', { fields: { ...fields, 'Source/Reference': 'AJ Bot' } });
+    }
+    console.log('Synced to Airtable Knowledge:', title);
+  } catch(e) { console.error('Airtable sync error:', e.message); }
+}
+
+async function syncXPostToAirtable(content, postType, tweetId, postedAt) {
+  try {
+    const fields = {
+      'Post Content': content.substring(0, 500),
+      'Post Type': postType || 'scheduled',
+      'Tweet ID': tweetId || '',
+      'Posted At': postedAt ? new Date(postedAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      'Status': 'Posted'
+    };
+    await airtableRequest('POST', 'X Posts', { fields });
+    console.log('Synced X post to Airtable');
+  } catch(e) { console.error('Airtable X post sync error:', e.message); }
+}
+
+async function syncMemoryToAirtable(key, value) {
+  try {
+    const search = await airtableRequest('GET', 'Memories?filterByFormula=' + encodeURIComponent('({Memory Key}="' + key + '")'));
+    const fields = {
+      'Memory Key': key,
+      'Memory Value': value.substring(0, 1000),
+      'Last Updated': new Date().toISOString().split('T')[0]
+    };
+    if (search?.records?.length > 0) {
+      await airtableRequest('PATCH', 'Memories', { fields }, search.records[0].id);
+    } else {
+      await airtableRequest('POST', 'Memories', { fields });
+    }
+  } catch(e) { console.error('Airtable memory sync error:', e.message); }
+}
+
+async function syncConversationToAirtable(summary, topics) {
+  try {
+    const fields = {
+      'Conversation Summary': summary.substring(0, 1000),
+      'Topics': topics || '',
+      'Date': new Date().toISOString().split('T')[0],
+      'Source': 'Telegram'
+    };
+    await airtableRequest('POST', 'Conversations', { fields });
+    console.log('Synced conversation to Airtable');
+  } catch(e) { console.error('Airtable conversation sync error:', e.message); }
 }
 
 // ── X POST CONTEXT ────────────────────────────────────────
@@ -452,6 +555,15 @@ async function getAJResponse(chatId, userMessage) {
   const reply = response.content[0].text;
   await saveMessage(chatId, 'user', userMessage);
   await saveMessage(chatId, 'assistant', reply);
+
+  // Sync conversation summary to Airtable periodically (every 10 messages)
+  try {
+    const { rows: msgCount } = await pool.query("SELECT COUNT(*) FROM conversations WHERE chat_id = $1", [chatId]);
+    if (parseInt(msgCount[0].count) % 10 === 0) {
+      const topics = userMessage.substring(0, 100);
+      syncConversationToAirtable(userMessage.substring(0, 200) + ' → ' + reply.substring(0, 200), topics).catch(() => {});
+    }
+  } catch(e) {}
 
   // Auto-save WIP to memory
   const wipKeywords = ['working on', 'drafting', 'let me write', 'here is the post', 'here is a draft', 'want me to post', 'should i post', 'ready to post', 'waiting for your', 'pending your approval'];
