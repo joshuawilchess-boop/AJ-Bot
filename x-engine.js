@@ -454,6 +454,33 @@ async function checkMentions(manual = false) {
 
       await telegramBot.sendMessage(joshuaChatId, msg);
       console.log('Mention from @' + author.username + ' sent for approval');
+
+      // Ping Make.com webhook for instant notification
+      if (process.env.MAKE_MENTION_WEBHOOK) {
+        try {
+          const https = require('https');
+          const payload = JSON.stringify({
+            author: author.username,
+            tweet: tweet.text,
+            tweet_id: tweet.id,
+            tweet_url: 'https://x.com/' + author.username + '/status/' + tweet.id,
+            draft_reply: replyDraft,
+            parent_context: parentContext || '',
+            timestamp: new Date().toISOString()
+          });
+          const url = new URL(process.env.MAKE_MENTION_WEBHOOK);
+          const req = https.request({
+            hostname: url.hostname,
+            path: url.pathname,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+          }, res => { res.on('data', () => {}); res.on('end', () => console.log('Make.com mention webhook fired')); });
+          req.on('error', e => console.error('Make.com webhook error:', e.message));
+          req.write(payload);
+          req.end();
+        } catch(e) { console.error('Make.com ping error:', e.message); }
+      }
+
       newCount++;
     }
 
