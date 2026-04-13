@@ -283,7 +283,11 @@ const AIRTABLE_BASE = process.env.AIRTABLE_BASE_ID || 'appH485b932LDcBF4';
 const AIRTABLE_TOKEN = process.env.AIRTABLE_API_TOKEN;
 
 async function airtableRequest(method, table, body = null, recordId = null) {
-  if (!AIRTABLE_TOKEN) return null;
+  if (!AIRTABLE_TOKEN) {
+    console.log('Airtable: No token set - skipping');
+    return null;
+  }
+  console.log('Airtable:', method, table.substring(0, 30));
   try {
     const https = require('https');
     const path = '/v0/' + AIRTABLE_BASE + '/' + encodeURIComponent(table) + (recordId ? '/' + recordId : '');
@@ -1127,6 +1131,20 @@ async function sendMorningBriefing() {
 cron.schedule('0 8 * * *', sendMorningBriefing, { timezone: 'America/Chicago' });
 
 // ── KNOWLEDGE GRAPH API ──────────────────────────────────
+app.get('/api/test-airtable', async (req, res) => {
+  try {
+    const result = await syncKnowledgeToAirtable(
+      'test',
+      'Airtable Test ' + new Date().toISOString(),
+      'This is a test record from AJ Bot to verify Airtable sync is working.',
+      'test,debug'
+    );
+    res.json({ success: true, token_set: !!process.env.AIRTABLE_API_TOKEN, base: process.env.AIRTABLE_BASE_ID });
+  } catch(e) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
 app.get('/api/graph', async (req, res) => {
   try {
     const { rows: knowledge } = await pool.query(
