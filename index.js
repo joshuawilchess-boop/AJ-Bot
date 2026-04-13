@@ -124,6 +124,11 @@ async function saveMemory(key, value) {
     } else {
       await pool.query("INSERT INTO memories (category, content) VALUES ($1, $2)", [key, value]);
     }
+    // Sync to Airtable - skip internal tracking keys
+    const skipKeys = ['last_mention_id', 'last_mention_hash', 'pending_reply_tweet_id', 'last_shown_draft', 'last_image_context'];
+    if (!skipKeys.includes(key) && value && value.length > 5) {
+      syncMemoryToAirtable(key, value).catch(e => console.error('Airtable memory sync error:', e.message));
+    }
   } catch (e) { console.error('saveMemory error:', e.message); }
 }
 
@@ -362,18 +367,15 @@ async function syncXPostToAirtable(content, postType, tweetId, postedAt) {
 
 async function syncMemoryToAirtable(key, value) {
   try {
-    const search = await airtableRequest('GET', 'Memories?filterByFormula=' + encodeURIComponent('({Memory Title}="' + key + '")'));
     const fields = {
       'Memory Title': key,
       'Memory Content': value.substring(0, 1000),
       'Memory Type': 'AJ Bot',
       'Date Created': new Date().toISOString().split('T')[0]
     };
-    if (search?.records?.length > 0) {
-      await airtableRequest('PATCH', 'Memories', { fields }, search.records[0].id);
-    } else {
-      await airtableRequest('POST', 'Memories', { fields });
-    }
+    const result = await airtableRequest('POST', 'Memories', { fields });
+    if (result?.id) console.log('Synced memory to Airtable:', key);
+    else console.log('Airtable memory result:', JSON.stringify(result).substring(0, 100));
   } catch(e) { console.error('Airtable memory sync error:', e.message); }
 }
 
