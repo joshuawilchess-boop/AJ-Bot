@@ -340,10 +340,9 @@ async function syncXPostToAirtable(content, postType, tweetId, postedAt) {
   try {
     const fields = {
       'Post Content': content.substring(0, 500),
-      'Post Type': postType || 'scheduled',
-      'Tweet ID': tweetId || '',
-      'Posted At': postedAt ? new Date(postedAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-      'Status': 'Posted'
+      'Post Date': postedAt ? new Date(postedAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+      'Posted By': '@AJ_agentic',
+      'Hashtags': postType || 'scheduled'
     };
     await airtableRequest('POST', 'X Posts', { fields });
     console.log('Synced X post to Airtable');
@@ -352,11 +351,12 @@ async function syncXPostToAirtable(content, postType, tweetId, postedAt) {
 
 async function syncMemoryToAirtable(key, value) {
   try {
-    const search = await airtableRequest('GET', 'Memories?filterByFormula=' + encodeURIComponent('({Memory Key}="' + key + '")'));
+    const search = await airtableRequest('GET', 'Memories?filterByFormula=' + encodeURIComponent('({Memory Title}="' + key + '")'));
     const fields = {
-      'Memory Key': key,
-      'Memory Value': value.substring(0, 1000),
-      'Last Updated': new Date().toISOString().split('T')[0]
+      'Memory Title': key,
+      'Memory Content': value.substring(0, 1000),
+      'Memory Type': 'AJ Bot',
+      'Date Created': new Date().toISOString().split('T')[0]
     };
     if (search?.records?.length > 0) {
       await airtableRequest('PATCH', 'Memories', { fields }, search.records[0].id);
@@ -369,10 +369,10 @@ async function syncMemoryToAirtable(key, value) {
 async function syncConversationToAirtable(summary, topics) {
   try {
     const fields = {
-      'Conversation Summary': summary.substring(0, 1000),
-      'Topics': topics || '',
-      'Date': new Date().toISOString().split('T')[0],
-      'Source': 'Telegram'
+      'Conversation Transcript': summary.substring(0, 1000),
+      'Topic/Category': topics || '',
+      'Conversation Date': new Date().toISOString().split('T')[0],
+      'Participants/User': 'Josh'
     };
     await airtableRequest('POST', 'Conversations', { fields });
     console.log('Synced conversation to Airtable');
