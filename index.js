@@ -714,7 +714,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     if (textLower.startsWith('/remember ')) {
       const note = text.replace(/^\/remember /i, '').trim();
       const key = 'note_' + Date.now();
-      await pool.query("INSERT INTO memories (category, content) VALUES ($1, $2)", [key, note]);
+      await saveMemory(key, note);
       await bot.sendMessage(chatId, 'Got it — saved to memory: ' + note);
       return;
     }
