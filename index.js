@@ -1057,6 +1057,25 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    // ── NATURAL MEMORY TRIGGERS ──────────────────────────
+    const memoryTriggers = ['remember this', 'remember that', 'save this', 'save that', 'don\'t forget', 'dont forget', 'keep that in mind', 'note that', 'log this', 'store this', 'save this to memory', 'add this to memory'];
+    const isMemoryTrigger = memoryTriggers.some(t => textLower.includes(t));
+
+    if (isMemoryTrigger) {
+      // Get AJ's last message as context for what to save
+      const { rows: lastMsg } = await pool.query(
+        "SELECT content FROM conversations WHERE chat_id = $1 AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+        [chatId]
+      );
+      const lastAJMsg = lastMsg.length > 0 ? lastMsg[0].content : '';
+      const noteContent = text + (lastAJMsg ? ' | Context: ' + lastAJMsg.substring(0, 200) : '');
+      const key = 'note_' + Date.now();
+      await saveMemory(key, noteContent);
+      const reply = await getAJResponse(chatId, text);
+      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+      return;
+    }
+
     // ── DEFAULT: AJ CONVERSATION ─────────────────────────
     // Detect URLs in message — fetch content so AJ can actually read them
     let enrichedMessage = text;
