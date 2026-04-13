@@ -80,7 +80,8 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
     // Strip accidental @mentions from standalone posts only
     let cleanContent = content;
     if (!replyToId) {
-      const stripped = content.replace(/@[A-Za-z0-9_]+/g, '').replace(/\s+/g, ' ').trim();
+      // Strip @mentions but preserve newlines — only collapse multiple spaces, not line breaks
+      const stripped = content.replace(/@[A-Za-z0-9_]+/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
       if (stripped.length >= 10) cleanContent = stripped;
     }
 
@@ -485,6 +486,7 @@ async function checkMentions(manual = false) {
     }
 
     if (newCount === 0 && manual) {
+      await telegramBot.sendMessage(joshuaChatId, 'No new unprocessed mentions of @AJ_agentic found.');
     }
   } catch (e) {
     console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
@@ -610,4 +612,3 @@ module.exports = {
   scanViralPosts,
   startSchedules
 };
-// deployed Mon Apr 13 00:02:12 CDT 2026
