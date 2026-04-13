@@ -370,7 +370,6 @@ async function syncMemoryToAirtable(key, value) {
     const fields = {
       'Memory Title': key,
       'Memory Content': value.substring(0, 1000),
-      'Memory Type': 'AJ Bot',
       'Date Created': new Date().toISOString().split('T')[0]
     };
     const result = await airtableRequest('POST', 'Memories', { fields });
