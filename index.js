@@ -898,7 +898,9 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
             const tweetId = await xEngine.postToX(draftText.trim());
             if (tweetId) {
               await pool.query('INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)', [draftText.trim(), 'conversational', 'approved']);
-              await bot.sendMessage(chatId, 'Posted. https://x.com/AJ_agentic/status/' + tweetId);
+              const link = 'https://x.com/AJ_agentic/status/' + tweetId;
+              await saveMemory('last_posted_tweet_url', link);
+              await bot.sendMessage(chatId, 'Posted. ' + link);
             } else {
               await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
             }
@@ -942,7 +944,9 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
       const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
       if (tweetId) {
-        await bot.sendMessage(chatId, 'Posted. https://x.com/AJ_agentic/status/' + tweetId);
+        const link = 'https://x.com/AJ_agentic/status/' + tweetId;
+        await saveMemory('last_posted_tweet_url', link);
+        await bot.sendMessage(chatId, 'Posted. ' + link);
       } else {
         await bot.sendMessage(chatId, 'X error when posting — check Railway logs.');
       }
