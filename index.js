@@ -330,21 +330,20 @@ async function airtableRequest(method, table, body = null, recordId = null) {
 
 async function syncKnowledgeToAirtable(category, title, content, tags) {
   try {
-    // Check if record exists first
-    const search = await airtableRequest('GET', 'Knowledge?filterByFormula=' + encodeURIComponent('({Knowledge Title}="' + title + '")'));
+    // Always insert new record - simple and reliable
     const fields = {
       'Knowledge Title': title,
       'Description': content.substring(0, 500),
       'Topic/Domain': category,
-      'Tags': tags,
+      'Source/Reference': 'AJ Bot - ' + (tags || ''),
       'Last Updated': new Date().toISOString().split('T')[0]
     };
-    if (search?.records?.length > 0) {
-      await airtableRequest('PATCH', 'Knowledge', { fields }, search.records[0].id);
+    const result = await airtableRequest('POST', 'Knowledge', { fields });
+    if (result?.id) {
+      console.log('Synced to Airtable Knowledge:', title);
     } else {
-      await airtableRequest('POST', 'Knowledge', { fields: { ...fields, 'Source/Reference': 'AJ Bot' } });
+      console.log('Airtable Knowledge sync result:', JSON.stringify(result).substring(0, 100));
     }
-    console.log('Synced to Airtable Knowledge:', title);
   } catch(e) { console.error('Airtable sync error:', e.message); }
 }
 
