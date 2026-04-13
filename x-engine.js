@@ -121,13 +121,36 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
     console.log('Posted to X:', tweetId);
     // Sync to Airtable if token available
     if (process.env.AIRTABLE_API_TOKEN) {
-      const at = require('https');
-      const fields = { 'Post Content': cleanContent.substring(0,500), 'Post Type': replyToId ? 'reply' : 'scheduled', 'Tweet ID': tweetId, 'Posted At': new Date().toISOString().split('T')[0], 'Status': 'Posted' };
-      const body = JSON.stringify({ fields });
-      const req = at.request({ hostname: 'api.airtable.com', path: '/v0/' + (process.env.AIRTABLE_BASE_ID || 'appH485b932LDcBF4') + '/X%20Posts', method: 'POST', headers: { 'Authorization': 'Bearer ' + process.env.AIRTABLE_API_TOKEN, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }}, () => {});
-      req.on('error', () => {});
-      req.write(body);
-      req.end();
+      try {
+        const at = require('https');
+        const fields = {
+          'Post Content': cleanContent.substring(0, 500),
+          'Post Date': new Date().toISOString().split('T')[0],
+          'Posted By': '@AJ_agentic'
+        };
+        const body = JSON.stringify({ fields });
+        const req = at.request({
+          hostname: 'api.airtable.com',
+          path: '/v0/' + (process.env.AIRTABLE_BASE_ID || 'appH485b932LDcBF4') + '/X%20Posts',
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + process.env.AIRTABLE_API_TOKEN,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body)
+          }
+        }, res => {
+          let data = '';
+          res.on('data', c => data += c);
+          res.on('end', () => {
+            const parsed = JSON.parse(data);
+            if (parsed.id) console.log('Synced X post to Airtable:', parsed.id);
+            else console.log('Airtable X post error:', JSON.stringify(parsed).substring(0, 150));
+          });
+        });
+        req.on('error', e => console.error('Airtable X post req error:', e.message));
+        req.write(body);
+        req.end();
+      } catch(e) { console.error('Airtable X post sync error:', e.message); }
     }
     return tweetId;
   } catch (e) {
