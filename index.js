@@ -948,7 +948,14 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         }
       }
 
-      const tweetId = await xEngine.postToX(pending.content, replyToId, imageBuffer, imageMimeType);
+      // Strip conversational preamble AJ adds before drafts
+      let cleanPost = pending.content
+        .replace(/^(here'?s? (?:one|a draft|the post|it|this)|how'?s? this|how about this|draft:|check this out|what about this)[:\s]*/gi, '')
+        .replace(/^["']|["']$/g, '')
+        .trim();
+      if (cleanPost.length < 20) cleanPost = pending.content; // fallback if stripping gutted it
+
+      const tweetId = await xEngine.postToX(cleanPost, replyToId, imageBuffer, imageMimeType);
       if (tweetId) {
         const link = 'https://x.com/AJ_agentic/status/' + tweetId;
         await saveMemory('last_posted_tweet_url', link);
