@@ -542,7 +542,9 @@ async function getAJResponse(chatId, userMessage) {
 
   const knowledgeContext = await getKnowledgeContext(userMessage);
 
-  let system = AJ_SYSTEM +
+  const now = new Date();
+  const timeStr = now.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+  let system = AJ_SYSTEM + "\n\nCURRENT TIME (Fort Worth, TX): " + timeStr +
     '\n\nCURRENT TASK LIST:\n' + taskContext +
     '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext +
     lastDraftContext;
