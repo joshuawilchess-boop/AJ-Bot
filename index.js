@@ -1096,6 +1096,26 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    // ── NATURAL REMINDER DETECTION ──────────────────────────
+    const reminderPatterns = ["remind me", "set a reminder", "don't let me forget", "ping me at", "alert me at", "notify me at"];
+    const isReminderRequest = reminderPatterns.some(p => textLower.includes(p));
+    if (isReminderRequest) {
+      const parseResp = await client.messages.create({ model: "claude-opus-4-6", max_tokens: 150, messages: [{ role: "user", content: "Current time in Fort Worth TX: " + timeStr + "\n\nExtract the reminder time and message from: \"" + text + "\"\nReply with ONLY two lines:\nTIME: [ISO 8601 datetime]\nMESSAGE: [what to remind about]" }] });
+      const parsed = parseResp.content[0].text.trim();
+      const timeMatch = parsed.match(/TIME:\s*(.+)/i);
+      const msgMatch = parsed.match(/MESSAGE:\s*(.+)/i);
+      if (timeMatch && msgMatch) {
+        const remindAt = new Date(timeMatch[1].trim());
+        const reminderMsg = msgMatch[1].trim();
+        if (!isNaN(remindAt.getTime())) {
+          await pool.query("INSERT INTO reminders (message, remind_at) VALUES ($1, $2)", [reminderMsg, remindAt]);
+          const friendly = remindAt.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+          await bot.sendMessage(chatId, "Done. I'll remind you at " + friendly + ":\n" + reminderMsg);
+          return;
+        }
+      }
+    }
+
     // ── DEFAULT: AJ CONVERSATION ─────────────────────────
     // Detect URLs in message — fetch content so AJ can actually read them
     let enrichedMessage = text;
