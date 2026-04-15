@@ -89,7 +89,8 @@ async function initDB() {
     console.log('Knowledge base seeded');
   }
 
-  console.log('Database ready');
+  pool.query("CREATE TABLE IF NOT EXISTS reminders (id SERIAL PRIMARY KEY, message TEXT NOT NULL, remind_at TIMESTAMP NOT NULL, fired BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())").catch(()=>{});
+  console.log("Database ready");
 }
 
 // ── CONVERSATION HISTORY ──────────────────────────────────
@@ -1943,6 +1944,8 @@ load();
 </body>
 </html>`);
 });
+
+cron.schedule("* * * * *", async () => { try { const { rows } = await pool.query("SELECT * FROM reminders WHERE fired = FALSE AND remind_at <= NOW()"); for (const r of rows) { if (JOSH_CHAT_ID) await bot.sendMessage(JOSH_CHAT_ID, "⏰ Reminder: " + r.message); await pool.query("UPDATE reminders SET fired = TRUE WHERE id = $1", [r.id]); } } catch(e) {} }, { timezone: "America/Chicago" });
 
 app.listen(PORT, async () => {
   await initDB();
