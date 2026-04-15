@@ -633,6 +633,9 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   const chatId = update.message.chat.id.toString();
   const text = update.message.text || update.message.caption || '';
   const textLower = text.toLowerCase().trim();
+  const now = new Date();
+  const timeStr = now.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+
   const hasPhoto = !!(update.message.photo || (update.message.document?.mime_type?.startsWith('image/')));
 
   try {
