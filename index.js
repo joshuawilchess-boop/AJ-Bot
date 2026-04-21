@@ -1449,6 +1449,24 @@ body::after {
 .hdr-left{display:flex;align-items:center;gap:14px;}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+@media (max-width: 768px) {
+  .wrap { padding: 16px 12px; }
+  .hdr { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+  .hdr-right { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  .stat-pill-val { font-size: 16px; }
+  .hdr-title { font-size: 13px; }
+  [style*="grid-template-columns:1fr 1fr 1fr"] { grid-template-columns: 1fr !important; }
+  [style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
+  .readiness-val { font-size: 36px; }
+  .card { padding: 16px; }
+  .card-label { font-size: 7px; }
+  .post-text { font-size: 10px; }
+  .ring-label, .ring-val { font-size: 9px; }
+  .kb-title { font-size: 10px; }
+  .rem-msg { font-size: 10px; }
+  .refresh-btn { font-size: 8px; padding: 4px 8px; }
+}
 .hdr-title{font-family:'Orbitron',sans-serif;font-weight:800;font-size:16px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}
 .hdr-title span{color:var(--red);}
 .hdr-time{font-size:10px;letter-spacing:0.1em;color:var(--text-dim);}
