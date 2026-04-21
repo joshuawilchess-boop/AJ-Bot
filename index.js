@@ -424,7 +424,7 @@ async function getXPostContext() {
     if (posted.length > 0) {
       lines.push('--- POSTED ---');
       posted.forEach((r, i) => {
-        const link = "";
+        const link = r.tweet_id ? ' → x.com/AJ_agentic/status/' + r.tweet_id : '';
         const when = r.posted_at ? ' (' + new Date(r.posted_at).toLocaleDateString() + ')' : '';
         lines.push((i + 1) + '. [' + (r.post_type || 'post') + ']' + when + ' ' + r.content + link);
       });
@@ -866,7 +866,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
         await tw.v2.deleteTweet(tweetId);
-        // skip - x_posts has no tweet_id column
+        await pool.query('UPDATE x_posts SET tweet_id = NULL WHERE tweet_id = $1', [tweetId]);
         await bot.sendMessage(chatId, 'Deleted from X.');
       } catch (e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
       return;
@@ -1318,50 +1318,32 @@ app.get('/api/test-airtable', async (req, res) => {
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    // Pending posts
-    const { rows: pending } = await pool.query(
-      "SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 5"
-    );
-    // Recent posts
-    const { rows: posted } = await pool.query(
-      "SELECT id, content, post_type, created_at as posted_at, tweet_id FROM pending_x_posts WHERE status = 'approved' AND tweet_id IS NOT NULL ORDER BY created_at DESC LIMIT 10"
-    );
-    // Pending reminders
-    const { rows: reminders } = await pool.query(
-      "SELECT message, remind_at FROM reminders WHERE fired = FALSE ORDER BY remind_at ASC LIMIT 5"
-    ).catch(() => ({ rows: [] }));
-    // Knowledge count
-    const { rows: kbCount } = await pool.query("SELECT COUNT(*) FROM knowledge_base");
-    // Memory count
-    const { rows: memCount } = await pool.query("SELECT COUNT(*) FROM memories");
-    // Recent conversations count today
-    const { rows: convCount } = await pool.query(
-      "SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role = 'user'"
-    );
-    // Recent knowledge
-    const { rows: recentKb } = await pool.query(
-      "SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"
-    );
-    // Recent memories
-    const { rows: recentMem } = await pool.query(
-      "SELECT category, content, created_at FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY created_at DESC LIMIT 5"
-    );
+    const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders] = await Promise.all([
+      pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='pending' ORDER BY created_at DESC LIMIT 5"),
+      pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='approved' ORDER BY created_at DESC LIMIT 10"),
+      pool.query("SELECT COUNT(*) FROM knowledge_base"),
+      pool.query("SELECT COUNT(*) FROM memories"),
+      pool.query("SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role='user'"),
+      pool.query("SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"),
+      pool.query("SELECT category, content FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY id DESC LIMIT 5"),
+      pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]}))
+    ]);
 
     res.json({
       status: 'online',
       timestamp: new Date().toISOString(),
       stats: {
-        knowledge: parseInt(kbCount[0].count),
-        memories: parseInt(memCount[0].count),
-        messages_today: parseInt(convCount[0].count),
-        pending_posts: pending.length,
-        total_posted: posted.length
+        knowledge: parseInt(kbCount.rows[0].count),
+        memories: parseInt(memCount.rows[0].count),
+        messages_today: parseInt(convCount.rows[0].count),
+        pending_posts: pending.rows.length,
+        total_posted: posted.rows.length
       },
-      pending_posts: pending,
-      recent_posts: posted,
-      reminders,
-      recent_knowledge: recentKb,
-      recent_memories: recentMem
+      pending_posts: pending.rows,
+      recent_posts: posted.rows,
+      reminders: reminders.rows,
+      recent_knowledge: recentKb.rows,
+      recent_memories: recentMem.rows
     });
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -2468,4 +2450,3 @@ app.listen(PORT, async () => {
     console.log('Webhook set: ' + webhookEndpoint);
   }
 });
-// cache bust Mon Apr 20 22:23:28 CDT 2026
