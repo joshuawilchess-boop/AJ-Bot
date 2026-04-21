@@ -89,8 +89,17 @@ async function initDB() {
     console.log('Knowledge base seeded');
   }
 
-  pool.query("CREATE TABLE IF NOT EXISTS reminders (id SERIAL PRIMARY KEY, message TEXT NOT NULL, remind_at TIMESTAMP NOT NULL, fired BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())").catch(()=>{});
-  console.log("Database ready");
+  // Reminders table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reminders (
+      id SERIAL PRIMARY KEY,
+      message TEXT NOT NULL,
+      remind_at TIMESTAMP NOT NULL,
+      fired BOOLEAN DEFAULT FALSE,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  console.log('Database ready');
 }
 
 // ── CONVERSATION HISTORY ──────────────────────────────────
@@ -487,6 +496,16 @@ YOUR ROLE AS AJ:
 - Use bullet points only when listing multiple items
 - Always end with one clear next action Josh should take
 - Prioritize what makes money fastest when asked what to work on
+- You always know the current time and date — it's injected into your context every message
+- When Josh asks for a reminder at a specific time, acknowledge the exact time and confirm it clearly
+- Use the current time to be contextually aware — morning energy vs late night, day of week, etc.
+
+ALWAYS TOP OF MIND:
+- You are actively building Overflow Revive into a done-for-you performance-based revenue recovery service
+- The model: recover failed payments, churn, abandoned carts for e-commerce/SaaS clients — charge % of recovered revenue only, zero upfront cost
+- Target clients: stores doing $50k-$500k/month who have no recovery system
+- First milestone: get 3 clients, prove numbers, build case studies
+- Check your knowledge base for full details on any of the 4 businesses — it has deep context on all of them
 
 YOUR X ACCOUNT (@AJ_agentic):
 You have a live X account you actively manage. Your recent posts and replies are always loaded into your context — you know exactly what you have posted and replied to.
@@ -543,9 +562,16 @@ async function getAJResponse(chatId, userMessage) {
 
   const knowledgeContext = await getKnowledgeContext(userMessage);
 
+  // Current time in Josh's timezone (Fort Worth, Texas = America/Chicago)
   const now = new Date();
-  const timeStr = now.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
-  let system = AJ_SYSTEM + "\n\nCURRENT TIME (Fort Worth, TX): " + timeStr +
+  const timeStr = now.toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true
+  });
+
+  let system = AJ_SYSTEM +
+    '\n\nCURRENT TIME (Fort Worth, TX): ' + timeStr +
     '\n\nCURRENT TASK LIST:\n' + taskContext +
     '\n\nYOUR X ACCOUNT STATUS (@AJ_agentic):\n' + xPostContext +
     lastDraftContext;
@@ -633,9 +659,6 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
   const chatId = update.message.chat.id.toString();
   const text = update.message.text || update.message.caption || '';
   const textLower = text.toLowerCase().trim();
-  const now = new Date();
-  const timeStr = now.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
-
   const hasPhoto = !!(update.message.photo || (update.message.document?.mime_type?.startsWith('image/')));
 
   try {
@@ -727,6 +750,45 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     if (textLower === '/memory') {
       const mems = await getActiveMemories();
       await bot.sendMessage(chatId, mems ? 'Active memory:\n\n' + mems : 'Nothing saved to memory yet.');
+      return;
+    }
+
+    if (textLower.startsWith('/remind ')) {
+      // Format: /remind 9:30am tomorrow | message  OR  /remind 2025-04-14 09:30 | message
+      const parts = text.replace(/^\/remind /i, '').split('|');
+      if (parts.length < 2) {
+        await bot.sendMessage(chatId, 'Format: /remind [time] | [message]\nExample: /remind 9:30am tomorrow | Post the Starlink reply');
+        return;
+      }
+      const timeStr = parts[0].trim();
+      const message = parts.slice(1).join('|').trim();
+      // Parse the time using AI
+      const parseResp = await client.messages.create({
+        model: 'claude-opus-4-6',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'Current time in Fort Worth TX (America/Chicago): ' + new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }) + '\n\nConvert this to ISO 8601 datetime: "' + timeStr + '"\nReply with ONLY the ISO datetime string, nothing else. Example: 2025-04-14T09:30:00' }]
+      });
+      const isoTime = parseResp.content[0].text.trim();
+      try {
+        const remindAt = new Date(isoTime);
+        if (isNaN(remindAt.getTime())) throw new Error('Invalid date');
+        await pool.query('INSERT INTO reminders (message, remind_at) VALUES ($1, $2)', [message, remindAt]);
+        const friendly = remindAt.toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+        await bot.sendMessage(chatId, 'Reminder set for ' + friendly + ':\n' + message);
+      } catch(e) {
+        await bot.sendMessage(chatId, 'Could not parse that time — try: /remind 9:30am tomorrow | your message');
+      }
+      return;
+    }
+
+    if (textLower === '/reminders') {
+      const { rows } = await pool.query("SELECT message, remind_at FROM reminders WHERE fired = FALSE ORDER BY remind_at ASC LIMIT 10");
+      if (rows.length === 0) { await bot.sendMessage(chatId, 'No pending reminders.'); return; }
+      const msg = rows.map(r => {
+        const t = new Date(r.remind_at).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+        return '⏰ ' + t + '\n   ' + r.message;
+      }).join('\n\n');
+      await bot.sendMessage(chatId, 'Pending reminders:\n\n' + msg);
       return;
     }
 
@@ -1099,26 +1161,6 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
-    // ── NATURAL REMINDER DETECTION ──────────────────────────
-    const reminderPatterns = ["remind me", "set a reminder", "don't let me forget", "ping me at", "alert me at", "notify me at"];
-    const isReminderRequest = reminderPatterns.some(p => textLower.includes(p));
-    if (isReminderRequest) {
-      const parseResp = await client.messages.create({ model: "claude-opus-4-6", max_tokens: 150, messages: [{ role: "user", content: "Current time in Fort Worth TX: " + timeStr + "\n\nExtract the reminder time and message from: \"" + text + "\"\nReply with ONLY two lines:\nTIME: [ISO 8601 datetime]\nMESSAGE: [what to remind about]" }] });
-      const parsed = parseResp.content[0].text.trim();
-      const timeMatch = parsed.match(/TIME:\s*(.+)/i);
-      const msgMatch = parsed.match(/MESSAGE:\s*(.+)/i);
-      if (timeMatch && msgMatch) {
-        const remindAt = new Date(timeMatch[1].trim());
-        const reminderMsg = msgMatch[1].trim();
-        if (!isNaN(remindAt.getTime())) {
-          await pool.query("INSERT INTO reminders (message, remind_at) VALUES ($1, $2)", [reminderMsg, remindAt]);
-          const friendly = remindAt.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
-          await bot.sendMessage(chatId, "Done. I'll remind you at " + friendly + ":\n" + reminderMsg);
-          return;
-        }
-      }
-    }
-
     // ── DEFAULT: AJ CONVERSATION ─────────────────────────
     // Detect URLs in message — fetch content so AJ can actually read them
     let enrichedMessage = text;
@@ -1274,6 +1316,58 @@ app.get('/api/test-airtable', async (req, res) => {
   }
 });
 
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    // Pending posts
+    const { rows: pending } = await pool.query(
+      "SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 5"
+    );
+    // Recent posts
+    const { rows: posted } = await pool.query(
+      "SELECT id, content, post_type, posted_at, tweet_id FROM pending_x_posts WHERE status = 'approved' AND tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 10"
+    );
+    // Pending reminders
+    const { rows: reminders } = await pool.query(
+      "SELECT message, remind_at FROM reminders WHERE fired = FALSE ORDER BY remind_at ASC LIMIT 5"
+    ).catch(() => ({ rows: [] }));
+    // Knowledge count
+    const { rows: kbCount } = await pool.query("SELECT COUNT(*) FROM knowledge_base");
+    // Memory count
+    const { rows: memCount } = await pool.query("SELECT COUNT(*) FROM memories");
+    // Recent conversations count today
+    const { rows: convCount } = await pool.query(
+      "SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role = 'user'"
+    );
+    // Recent knowledge
+    const { rows: recentKb } = await pool.query(
+      "SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"
+    );
+    // Recent memories
+    const { rows: recentMem } = await pool.query(
+      "SELECT category, content, created_at FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY created_at DESC LIMIT 5"
+    );
+
+    res.json({
+      status: 'online',
+      timestamp: new Date().toISOString(),
+      stats: {
+        knowledge: parseInt(kbCount[0].count),
+        memories: parseInt(memCount[0].count),
+        messages_today: parseInt(convCount[0].count),
+        pending_posts: pending.length,
+        total_posted: posted.length
+      },
+      pending_posts: pending,
+      recent_posts: posted,
+      reminders,
+      recent_knowledge: recentKb,
+      recent_memories: recentMem
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/graph', async (req, res) => {
   try {
     const { rows: knowledge } = await pool.query(
@@ -1295,6 +1389,390 @@ app.get('/api/graph', async (req, res) => {
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── REMINDER ENDPOINT (called by AJ via conversation) ────
+app.post('/api/set-reminder', async (req, res) => {
+  try {
+    const { message, remind_at } = req.body;
+    if (!message || !remind_at) return res.status(400).json({ error: 'Missing fields' });
+    await pool.query('INSERT INTO reminders (message, remind_at) VALUES ($1, $2)', [message, new Date(remind_at)]);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Check reminders every minute
+cron.schedule('* * * * *', async () => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM reminders WHERE fired = FALSE AND remind_at <= NOW()"
+    );
+    for (const r of rows) {
+      if (JOSH_CHAT_ID) {
+        await bot.sendMessage(JOSH_CHAT_ID, '⏰ Reminder: ' + r.message);
+      }
+      await pool.query('UPDATE reminders SET fired = TRUE WHERE id = $1', [r.id]);
+      console.log('Reminder fired:', r.message);
+    }
+  } catch(e) { console.error('Reminder check error:', e.message); }
+}, { timezone: 'America/Chicago' });
+
+app.get('/dashboard', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AJ — Mission Control</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --red: #e8321a;
+  --red-bright: #ff4422;
+  --red-dim: #8b1a0a;
+  --red-glow: rgba(232,50,26,0.15);
+  --bg: #060608;
+  --bg2: #0d0d12;
+  --glass: rgba(255,255,255,0.03);
+  --glass-border: rgba(255,255,255,0.07);
+  --glass-red: rgba(232,50,26,0.08);
+  --glass-red-border: rgba(232,50,26,0.2);
+  --text: rgba(255,255,255,0.9);
+  --text-dim: rgba(255,255,255,0.4);
+  --text-dimmer: rgba(255,255,255,0.2);
+  --green: #22dd88;
+  --amber: #f0a020;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;min-height:100%;background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;overflow-x:hidden;}
+
+/* BG atmosphere */
+body::before {
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 70% 50% at 15% 50%, rgba(232,50,26,0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 70% at 85% 20%, rgba(232,50,26,0.04) 0%, transparent 60%),
+    radial-gradient(ellipse 80% 40% at 50% 100%, rgba(232,50,26,0.08) 0%, transparent 50%);
+}
+body::after {
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(255,255,255,0.012) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.012) 1px,transparent 1px);
+  background-size:40px 40px;
+}
+
+.wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:24px 20px;}
+
+/* Header */
+.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--glass-border);}
+.hdr-left{display:flex;align-items:center;gap:14px;}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.hdr-title{font-family:'Syne',sans-serif;font-weight:800;font-size:16px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}
+.hdr-title span{color:var(--red);}
+.hdr-time{font-size:10px;letter-spacing:0.1em;color:var(--text-dim);}
+.hdr-right{display:flex;gap:20px;}
+.stat-pill{display:flex;flex-direction:column;align-items:center;gap:2px;}
+.stat-pill-val{font-family:'Syne',sans-serif;font-weight:700;font-size:20px;color:#fff;line-height:1;}
+.stat-pill-label{font-size:8px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);}
+
+/* Grid layout */
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
+.grid-full{margin-bottom:16px;}
+
+/* Glass card */
+.card{
+  background:var(--glass);
+  border:1px solid var(--glass-border);
+  border-radius:12px;
+  padding:20px;
+  backdrop-filter:blur(20px);
+  transition:border-color 0.2s;
+  position:relative;
+  overflow:hidden;
+}
+.card::before{
+  content:'';position:absolute;inset:0;border-radius:12px;
+  background:linear-gradient(135deg,rgba(255,255,255,0.04) 0%,transparent 60%);
+  pointer-events:none;
+}
+.card:hover{border-color:rgba(255,255,255,0.12);}
+.card.red-accent{border-color:var(--glass-red-border);background:var(--glass-red);}
+.card.red-accent::before{background:linear-gradient(135deg,rgba(232,50,26,0.08) 0%,transparent 60%);}
+
+.card-label{font-size:8px;letter-spacing:0.2em;text-transform:uppercase;color:var(--text-dim);margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+.card-label::after{content:'';flex:1;height:1px;background:var(--glass-border);}
+
+/* Readiness meter */
+.readiness-val{font-family:'Syne',sans-serif;font-weight:800;font-size:48px;color:#fff;line-height:1;margin-bottom:4px;}
+.readiness-sub{font-size:10px;color:var(--text-dim);letter-spacing:0.1em;}
+.readiness-bar{margin-top:14px;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;}
+.readiness-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--red),var(--red-bright));transition:width 1s ease;box-shadow:0 0 8px var(--red);}
+
+/* Status ring */
+.status-ring{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.ring-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.ring-dot.green{background:var(--green);box-shadow:0 0 6px var(--green);}
+.ring-dot.red{background:var(--red);box-shadow:0 0 6px var(--red);}
+.ring-dot.amber{background:var(--amber);box-shadow:0 0 6px var(--amber);}
+.ring-dot.dim{background:rgba(255,255,255,0.2);}
+.ring-label{font-size:10px;color:var(--text-dim);letter-spacing:0.05em;}
+.ring-val{font-size:10px;color:var(--text);margin-left:auto;}
+
+/* Post item */
+.post-item{padding:10px 0;border-bottom:1px solid var(--glass-border);cursor:default;}
+.post-item:last-child{border-bottom:none;}
+.post-text{font-size:11px;color:rgba(255,255,255,0.75);line-height:1.6;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.post-meta{font-size:9px;color:var(--text-dimmer);display:flex;gap:10px;}
+.post-badge{font-size:8px;padding:2px 6px;border-radius:3px;letter-spacing:0.08em;text-transform:uppercase;}
+.badge-pending{background:rgba(240,160,32,0.15);color:var(--amber);border:1px solid rgba(240,160,32,0.2);}
+.badge-posted{background:rgba(34,221,136,0.1);color:var(--green);border:1px solid rgba(34,221,136,0.15);}
+
+/* Knowledge item */
+.kb-item{padding:8px 0;border-bottom:1px solid var(--glass-border);}
+.kb-item:last-child{border-bottom:none;}
+.kb-title{font-size:11px;color:rgba(255,255,255,0.8);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kb-cat{font-size:9px;color:var(--red);letter-spacing:0.08em;text-transform:uppercase;}
+
+/* Reminder item */
+.rem-item{padding:8px 0;border-bottom:1px solid var(--glass-border);display:flex;gap:10px;align-items:flex-start;}
+.rem-item:last-child{border-bottom:none;}
+.rem-icon{color:var(--amber);font-size:12px;flex-shrink:0;margin-top:1px;}
+.rem-msg{font-size:11px;color:rgba(255,255,255,0.8);line-height:1.4;}
+.rem-time{font-size:9px;color:var(--text-dimmer);margin-top:2px;}
+
+/* Empty state */
+.empty{font-size:11px;color:var(--text-dimmer);text-align:center;padding:20px 0;letter-spacing:0.05em;}
+
+/* X post full text tooltip */
+.post-item:hover .post-text{white-space:normal;overflow:visible;text-overflow:unset;}
+
+/* Refresh btn */
+.refresh-btn{font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);background:none;border:1px solid var(--glass-border);border-radius:4px;padding:4px 10px;cursor:pointer;transition:all 0.2s;font-family:'JetBrains Mono',monospace;}
+.refresh-btn:hover{border-color:var(--glass-red-border);color:var(--red);}
+
+/* Loading */
+.loading{font-size:10px;color:var(--text-dimmer);letter-spacing:0.1em;text-align:center;padding:40px;}
+
+/* Activity feed */
+.activity-line{font-size:10px;color:var(--text-dim);padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;gap:10px;}
+.activity-line:last-child{border-bottom:none;}
+.activity-time{color:var(--text-dimmer);flex-shrink:0;min-width:50px;}
+.activity-text{color:rgba(255,255,255,0.6);}
+.activity-text em{color:var(--red);font-style:normal;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="status-dot"></div>
+      <div>
+        <div class="hdr-title">AJ <span>//</span> Mission Control</div>
+        <div class="hdr-time" id="live-time">Loading...</div>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <div class="stat-pill"><div class="stat-pill-val" id="s-kb">—</div><div class="stat-pill-label">Knowledge</div></div>
+      <div class="stat-pill"><div class="stat-pill-val" id="s-mem">—</div><div class="stat-pill-label">Memories</div></div>
+      <div class="stat-pill"><div class="stat-pill-val" id="s-msg">—</div><div class="stat-pill-label">Msgs Today</div></div>
+      <div class="stat-pill"><div class="stat-pill-val" id="s-post">—</div><div class="stat-pill-label">Posts</div></div>
+      <button class="refresh-btn" onclick="load()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <div class="grid" id="main-grid">
+    <div class="loading">Connecting to AJ...</div>
+  </div>
+
+</div>
+
+<script>
+function timeAgo(iso) {
+  const d = new Date(iso);
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+function fmtTime(iso) {
+  return new Date(iso).toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true
+  });
+}
+
+function readiness(data) {
+  let score = 40;
+  if (data.stats.knowledge > 5) score += 20;
+  if (data.stats.memories > 3) score += 10;
+  if (data.stats.messages_today > 0) score += 15;
+  if (data.stats.total_posted > 5) score += 15;
+  return Math.min(score, 98);
+}
+
+async function load() {
+  try {
+    const data = await fetch('/api/dashboard').then(r => r.json());
+
+    // Stats
+    document.getElementById('s-kb').textContent = data.stats.knowledge;
+    document.getElementById('s-mem').textContent = data.stats.memories;
+    document.getElementById('s-msg').textContent = data.stats.messages_today;
+    document.getElementById('s-post').textContent = data.stats.total_posted;
+
+    const ready = readiness(data);
+
+    // Build grid
+    const grid = document.getElementById('main-grid');
+    grid.innerHTML = '';
+    grid.className = '';
+
+    grid.innerHTML = \`
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;grid-column:1/-1;">
+
+      <!-- Readiness -->
+      <div class="card red-accent">
+        <div class="card-label">Daily Readiness</div>
+        <div class="readiness-val" id="ready-val">0%</div>
+        <div class="readiness-sub">Operational capacity</div>
+        <div class="readiness-bar"><div class="readiness-fill" id="ready-bar" style="width:0%"></div></div>
+      </div>
+
+      <!-- System Status -->
+      <div class="card">
+        <div class="card-label">System Status</div>
+        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Telegram</div><div class="ring-val">Online</div></div>
+        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">X (@AJ_agentic)</div><div class="ring-val">Active</div></div>
+        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Airtable Sync</div><div class="ring-val">Connected</div></div>
+        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Make.com</div><div class="ring-val">3 Scenarios</div></div>
+        <div class="status-ring"><div class="ring-dot \${data.stats.pending_posts > 0 ? 'amber' : 'dim'}"></div><div class="ring-label">Pending Posts</div><div class="ring-val">\${data.stats.pending_posts}</div></div>
+      </div>
+
+      <!-- Today's Activity -->
+      <div class="card">
+        <div class="card-label">Today's Activity</div>
+        \${data.recent_posts.slice(0,3).map(p => \`
+          <div class="activity-line">
+            <div class="activity-time">\${timeAgo(p.posted_at||p.created_at)}</div>
+            <div class="activity-text">Posted to <em>@AJ_agentic</em></div>
+          </div>
+        \`).join('')}
+        \${data.reminders.slice(0,2).map(r => \`
+          <div class="activity-line">
+            <div class="activity-time">\${fmtTime(r.remind_at)}</div>
+            <div class="activity-text"><em>Reminder</em> — \${r.message.substring(0,30)}\${r.message.length>30?'...':''}</div>
+          </div>
+        \`).join('')}
+        \${data.stats.messages_today > 0 ? \`<div class="activity-line"><div class="activity-time">Today</div><div class="activity-text"><em>\${data.stats.messages_today}</em> messages with Josh</div></div>\` : ''}
+        \${!data.recent_posts.length && !data.reminders.length && !data.stats.messages_today ? '<div class="empty">No activity yet today</div>' : ''}
+      </div>
+
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;grid-column:1/-1;">
+
+      <!-- Pending Posts -->
+      <div class="card">
+        <div class="card-label">Pending Approval</div>
+        \${data.pending_posts.length ? data.pending_posts.map(p => \`
+          <div class="post-item">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span class="post-badge badge-pending">Pending</span>
+              <span class="post-meta">\${timeAgo(p.created_at)}</span>
+            </div>
+            <div class="post-text">\${p.content}</div>
+          </div>
+        \`).join('') : '<div class="empty">Queue is clear</div>'}
+      </div>
+
+      <!-- Recent X Posts -->
+      <div class="card">
+        <div class="card-label">Recent X Posts</div>
+        \${data.recent_posts.length ? data.recent_posts.slice(0,4).map(p => \`
+          <div class="post-item">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span class="post-badge badge-posted">Posted</span>
+              <span class="post-meta">\${timeAgo(p.posted_at||p.created_at)}</span>
+              \${p.tweet_id ? \`<a href="https://x.com/AJ_agentic/status/\${p.tweet_id}" target="_blank" style="font-size:9px;color:var(--red);text-decoration:none;margin-left:auto;">↗ View</a>\` : ''}
+            </div>
+            <div class="post-text">\${p.content}</div>
+          </div>
+        \`).join('') : '<div class="empty">No posts yet</div>'}
+      </div>
+
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;grid-column:1/-1;">
+
+      <!-- Reminders -->
+      <div class="card">
+        <div class="card-label">Upcoming Reminders</div>
+        \${data.reminders.length ? data.reminders.map(r => \`
+          <div class="rem-item">
+            <div class="rem-icon">⏰</div>
+            <div>
+              <div class="rem-msg">\${r.message}</div>
+              <div class="rem-time">\${fmtTime(r.remind_at)}</div>
+            </div>
+          </div>
+        \`).join('') : '<div class="empty">No reminders set</div>'}
+      </div>
+
+      <!-- Recent Knowledge -->
+      <div class="card">
+        <div class="card-label">Knowledge Base</div>
+        \${data.recent_knowledge.length ? data.recent_knowledge.map(k => \`
+          <div class="kb-item">
+            <div class="kb-title">\${k.title}</div>
+            <div class="kb-cat">\${k.category}</div>
+          </div>
+        \`).join('') : '<div class="empty">Empty — add knowledge above</div>'}
+      </div>
+
+      <!-- Recent Memories -->
+      <div class="card">
+        <div class="card-label">Active Memory</div>
+        \${data.recent_memories.length ? data.recent_memories.map(m => \`
+          <div class="kb-item">
+            <div class="kb-title">\${m.content.substring(0,60)}\${m.content.length>60?'...':''}</div>
+            <div class="kb-cat">\${m.category.replace(/_/g,' ')}</div>
+          </div>
+        \`).join('') : '<div class="empty">No memories yet</div>'}
+      </div>
+
+    </div>
+    \`;
+
+    // Animate readiness
+    setTimeout(() => {
+      document.getElementById('ready-val').textContent = ready + '%';
+      document.getElementById('ready-bar').style.width = ready + '%';
+    }, 100);
+
+  } catch(e) {
+    document.getElementById('main-grid').innerHTML = '<div class="loading" style="color:var(--red)">Failed to connect to AJ — ' + e.message + '</div>';
+  }
+}
+
+// Live clock
+function clock() {
+  document.getElementById('live-time').textContent = new Date().toLocaleString('en-US', {
+    timeZone: 'America/Chicago', weekday:'short', month:'short', day:'numeric',
+    hour:'numeric', minute:'2-digit', second:'2-digit', hour12:true
+  }) + ' CT';
+}
+clock();
+setInterval(clock, 1000);
+setInterval(load, 30000);
+load();
+</script>
+</body>
+</html>`);
 });
 
 app.get('/', (req, res) => {
@@ -1967,8 +2445,6 @@ load();
 </body>
 </html>`);
 });
-
-cron.schedule("* * * * *", async () => { try { const { rows } = await pool.query("SELECT * FROM reminders WHERE fired = FALSE AND remind_at <= NOW()"); for (const r of rows) { if (JOSH_CHAT_ID) await bot.sendMessage(JOSH_CHAT_ID, "⏰ Reminder: " + r.message); await pool.query("UPDATE reminders SET fired = TRUE WHERE id = $1", [r.id]); } } catch(e) {} }, { timezone: "America/Chicago" });
 
 app.listen(PORT, async () => {
   await initDB();
