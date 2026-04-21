@@ -405,7 +405,7 @@ async function syncConversationToAirtable(summary, topics) {
 async function getXPostContext() {
   try {
     const { rows: posted } = await pool.query(
-      "SELECT content, tweet_id, post_type, posted_at FROM x_posts ORDER BY created_at DESC LIMIT 15"
+      "SELECT content, post_type, created_at as posted_at FROM x_posts ORDER BY created_at DESC LIMIT 15"
     );
     const { rows: pending } = await pool.query(
       "SELECT content, post_type FROM pending_x_posts WHERE status = 'pending' ORDER BY created_at DESC LIMIT 3"
@@ -854,9 +854,9 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     if (textLower === '/xdelete') {
-      const { rows } = await pool.query('SELECT tweet_id, content FROM x_posts WHERE tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 1');
+      const { rows } = await pool.query('SELECT content FROM x_posts ORDER BY created_at DESC LIMIT 1');
       if (rows.length === 0) { await bot.sendMessage(chatId, 'No recent posts found.'); return; }
-      await bot.sendMessage(chatId, 'Reply /xconfirmdelete ' + rows[0].tweet_id + ' to delete:\n' + rows[0].content.substring(0, 60));
+      await bot.sendMessage(chatId, 'Latest post:\n' + rows[0].content.substring(0, 100));
       return;
     }
 
