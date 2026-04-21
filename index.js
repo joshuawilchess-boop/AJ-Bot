@@ -1380,7 +1380,7 @@ app.get('/api/graph', async (req, res) => {
        GROUP BY DATE(created_at) ORDER BY date DESC LIMIT 30`
     );
     const { rows: xposts } = await pool.query(
-      "SELECT id, LEFT(content, 80) as content, post_type, posted_at FROM x_posts ORDER BY posted_at DESC LIMIT 20"
+      "SELECT id, LEFT(content, 80) as content, post_type, created_at as posted_at FROM x_posts ORDER BY created_at DESC LIMIT 20"
     );
     const { rows: memories } = await pool.query(
       "SELECT category, LEFT(content, 60) as content FROM memories WHERE category NOT LIKE 'processed_%' AND category != 'last_mention_id' ORDER BY created_at DESC LIMIT 10"
