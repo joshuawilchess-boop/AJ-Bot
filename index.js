@@ -1321,10 +1321,10 @@ app.get('/api/dashboard', async (req, res) => {
     const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders] = await Promise.all([
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='pending' ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='approved' ORDER BY created_at DESC LIMIT 10"),
-      pool.query("SELECT COUNT(*) FROM knowledge"),
+      pool.query("SELECT COUNT(*) FROM knowledge_base"),
       pool.query("SELECT COUNT(*) FROM memories"),
       pool.query("SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role='user'"),
-      pool.query("SELECT title, category, created_at FROM knowledge ORDER BY created_at DESC LIMIT 5"),
+      pool.query("SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT category, content FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY id DESC LIMIT 5"),
       pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]}))
     ]);
@@ -1406,7 +1406,7 @@ app.get('/dashboard', (req, res) => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AJ — Mission Control</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --red: #e8321a;
@@ -1426,7 +1426,7 @@ app.get('/dashboard', (req, res) => {
   --amber: #f0a020;
 }
 *{margin:0;padding:0;box-sizing:border-box;}
-html,body{width:100%;min-height:100%;background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;overflow-x:hidden;}
+html,body{width:100%;min-height:100%;background:var(--bg);color:var(--text);font-family:'Space Mono',monospace;overflow-x:hidden;}
 
 /* BG atmosphere */
 body::before {
@@ -1449,12 +1449,12 @@ body::after {
 .hdr-left{display:flex;align-items:center;gap:14px;}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-.hdr-title{font-family:'Syne',sans-serif;font-weight:800;font-size:16px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}
+.hdr-title{font-family:'Orbitron',sans-serif;font-weight:800;font-size:16px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}
 .hdr-title span{color:var(--red);}
 .hdr-time{font-size:10px;letter-spacing:0.1em;color:var(--text-dim);}
 .hdr-right{display:flex;gap:20px;}
 .stat-pill{display:flex;flex-direction:column;align-items:center;gap:2px;}
-.stat-pill-val{font-family:'Syne',sans-serif;font-weight:700;font-size:20px;color:#fff;line-height:1;}
+.stat-pill-val{font-family:'Orbitron',sans-serif;font-weight:700;font-size:20px;color:#fff;line-height:1;}
 .stat-pill-label{font-size:8px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);}
 
 /* Grid layout */
@@ -1486,7 +1486,7 @@ body::after {
 .card-label::after{content:'';flex:1;height:1px;background:var(--glass-border);}
 
 /* Readiness meter */
-.readiness-val{font-family:'Syne',sans-serif;font-weight:800;font-size:48px;color:#fff;line-height:1;margin-bottom:4px;}
+.readiness-val{font-family:'Orbitron',sans-serif;font-weight:800;font-size:48px;color:#fff;line-height:1;margin-bottom:4px;}
 .readiness-sub{font-size:10px;color:var(--text-dim);letter-spacing:0.1em;}
 .readiness-bar{margin-top:14px;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;}
 .readiness-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--red),var(--red-bright));transition:width 1s ease;box-shadow:0 0 8px var(--red);}
@@ -1530,7 +1530,7 @@ body::after {
 .post-item:hover .post-text{white-space:normal;overflow:visible;text-overflow:unset;}
 
 /* Refresh btn */
-.refresh-btn{font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);background:none;border:1px solid var(--glass-border);border-radius:4px;padding:4px 10px;cursor:pointer;transition:all 0.2s;font-family:'JetBrains Mono',monospace;}
+.refresh-btn{font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);background:none;border:1px solid var(--glass-border);border-radius:4px;padding:4px 10px;cursor:pointer;transition:all 0.2s;font-family:'Space Mono',monospace;}
 .refresh-btn:hover{border-color:var(--glass-red-border);color:var(--red);}
 
 /* Loading */
