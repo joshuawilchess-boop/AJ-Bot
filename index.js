@@ -1321,10 +1321,10 @@ app.get('/api/dashboard', async (req, res) => {
     const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders] = await Promise.all([
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='pending' ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='approved' ORDER BY created_at DESC LIMIT 10"),
-      pool.query("SELECT COUNT(*) FROM knowledge_base"),
+      pool.query("SELECT COUNT(*) FROM knowledge"),
       pool.query("SELECT COUNT(*) FROM memories"),
       pool.query("SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role='user'"),
-      pool.query("SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"),
+      pool.query("SELECT title, category, created_at FROM knowledge ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT category, content FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY id DESC LIMIT 5"),
       pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]}))
     ]);
