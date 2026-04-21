@@ -866,7 +866,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
         await tw.v2.deleteTweet(tweetId);
-        await pool.query('UPDATE x_posts SET tweet_id = NULL WHERE tweet_id = $1', [tweetId]);
+        // tweet_id not in x_posts - skip
         await bot.sendMessage(chatId, 'Deleted from X.');
       } catch (e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
       return;
