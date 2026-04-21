@@ -866,7 +866,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         const { TwitterApi } = require('twitter-api-v2');
         const tw = new TwitterApi({ appKey: process.env.X_API_KEY, appSecret: process.env.X_API_SECRET, accessToken: process.env.X_ACCESS_TOKEN, accessSecret: process.env.X_ACCESS_SECRET });
         await tw.v2.deleteTweet(tweetId);
-        // x_posts has no tweet_id column - skip
+        await pool.query('UPDATE x_posts SET tweet_id = NULL WHERE tweet_id = $1', [tweetId]);
         await bot.sendMessage(chatId, 'Deleted from X.');
       } catch (e) { await bot.sendMessage(chatId, 'Delete failed: ' + e.message); }
       return;
@@ -1321,10 +1321,10 @@ app.get('/api/dashboard', async (req, res) => {
     const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders] = await Promise.all([
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='pending' ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='approved' ORDER BY created_at DESC LIMIT 10"),
-      pool.query("SELECT COUNT(*) FROM knowledge"),
+      pool.query("SELECT COUNT(*) FROM knowledge_base"),
       pool.query("SELECT COUNT(*) FROM memories"),
       pool.query("SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role='user'"),
-      pool.query("SELECT title, category, created_at FROM knowledge ORDER BY created_at DESC LIMIT 5"),
+      pool.query("SELECT title, category, created_at FROM knowledge_base ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT category, content FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY id DESC LIMIT 5"),
       pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]}))
     ]);
@@ -1599,7 +1599,9 @@ function readiness(data) {
 
 async function load() {
   try {
-    const data = await fetch('/api/dashboard').then(r => r.json());
+    const resp = await fetch('/api/dashboard');
+    const data = await resp.json();
+    if (!data || !data.stats) throw new Error('Invalid response: ' + JSON.stringify(data).substring(0,100));
 
     // Stats
     document.getElementById('s-kb').textContent = data.stats.knowledge;
