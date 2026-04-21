@@ -1324,7 +1324,7 @@ app.get('/api/dashboard', async (req, res) => {
     );
     // Recent posts
     const { rows: posted } = await pool.query(
-      "SELECT id, content, post_type, posted_at, tweet_id FROM pending_x_posts WHERE status = 'approved' AND tweet_id IS NOT NULL ORDER BY posted_at DESC LIMIT 10"
+      "SELECT id, content, post_type, created_at as posted_at, tweet_id FROM pending_x_posts WHERE status = 'approved' AND tweet_id IS NOT NULL ORDER BY created_at DESC LIMIT 10"
     );
     // Pending reminders
     const { rows: reminders } = await pool.query(
