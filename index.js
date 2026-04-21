@@ -424,7 +424,7 @@ async function getXPostContext() {
     if (posted.length > 0) {
       lines.push('--- POSTED ---');
       posted.forEach((r, i) => {
-        const link = r.tweet_id ? ' → x.com/AJ_agentic/status/' + r.tweet_id : '';
+        const link = "";
         const when = r.posted_at ? ' (' + new Date(r.posted_at).toLocaleDateString() + ')' : '';
         lines.push((i + 1) + '. [' + (r.post_type || 'post') + ']' + when + ' ' + r.content + link);
       });
