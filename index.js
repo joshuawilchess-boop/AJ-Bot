@@ -268,6 +268,19 @@ async function fetchUrl(url) {
             .replace(/<style[\s\S]*?<\/style>/gi, '')
             .replace(/<[^>]+>/g, ' ')
             .replace(/&nbsp;/g, ' ')
+
+async function braveSearch(query) {
+  try {
+    const https = require("https");
+    const encoded = encodeURIComponent(query);
+    return await new Promise((resolve, reject) => {
+      const req = https.request({ hostname: "api.search.brave.com", path: "/res/v1/web/search?q=" + encoded + "&count=5", method: "GET", headers: { "Accept": "application/json", "X-Subscription-Token": process.env.BRAVE_API_KEY || "" } }, res => {
+        let data = ""; res.on("data", c => data += c);
+        res.on("end", () => { try { const json = JSON.parse(data); const results = (json.web?.results || []).slice(0,4).map(r => r.title + "\n" + r.description + "\nSource: " + r.url).join("\n\n"); resolve(results || "No results found."); } catch(e) { resolve("Search error"); } });
+      }); req.on("error", reject); req.end();
+    });
+  } catch(e) { return "Search error: " + e.message; }
+}
             .replace(/&amp;/g, '&')
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
@@ -1145,6 +1158,19 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     // ── NATURAL MEMORY TRIGGERS ──────────────────────────
     const memoryTriggers = ['remember this', 'remember that', 'save this', 'save that', 'don\'t forget', 'dont forget', 'keep that in mind', 'note that', 'log this', 'store this', 'save this to memory', 'add this to memory'];
     const isMemoryTrigger = memoryTriggers.some(t => textLower.includes(t));
+
+    // Web search trigger
+    const searchTriggers = ["search for", "look up", "look this up", "google", "search the web", "find out", "what is the latest", "what are the latest", "search", "web search"];
+    const isSearchRequest = searchTriggers.some(t => textLower.startsWith(t) || textLower.includes("can you search") || textLower.includes("can you look up") || textLower.includes("search for me"));
+    if (isSearchRequest) {
+      const query = text.replace(/^(search for|look up|google|search the web for|search for me|can you search for|can you look up)\/i, "").trim();
+      await bot.sendMessage(chatId, "Searching for: " + query + "...");
+      const results = await braveSearch(query);
+      const prompt = "Josh asked you to search for: " + query + "\n\nHere are the search results:\n" + results + "\n\nSummarize what you found in a sharp, concise way. Include the most important info and a source link.";
+      const reply = await getAJResponse(chatId, prompt);
+      await bot.sendMessage(chatId, reply, { parse_mode: "Markdown" });
+      return;
+    }
 
     if (isMemoryTrigger) {
       // Get AJ's last message as context for what to save
