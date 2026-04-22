@@ -269,18 +269,6 @@ async function fetchUrl(url) {
             .replace(/<[^>]+>/g, ' ')
             .replace(/&nbsp;/g, ' ')
 
-async function braveSearch(query) {
-  try {
-    const https = require("https");
-    const encoded = encodeURIComponent(query);
-    return await new Promise((resolve, reject) => {
-      const req = https.request({ hostname: "api.search.brave.com", path: "/res/v1/web/search?q=" + encoded + "&count=5", method: "GET", headers: { "Accept": "application/json", "X-Subscription-Token": process.env.BRAVE_API_KEY || "" } }, res => {
-        let data = ""; res.on("data", c => data += c);
-        res.on("end", () => { try { const json = JSON.parse(data); const results = (json.web?.results || []).slice(0,4).map(r => r.title + "\n" + r.description + "\nSource: " + r.url).join("\n\n"); resolve(results || "No results found."); } catch(e) { resolve("Search error"); } });
-      }); req.on("error", reject); req.end();
-    });
-  } catch(e) { return "Search error: " + e.message; }
-}
         });
         res.on('error', reject);
       });
