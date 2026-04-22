@@ -1156,7 +1156,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     const searchTriggers = ["search for", "look up", "look this up", "google", "search the web", "find out", "what is the latest", "what are the latest", "search", "web search"];
     const isSearchRequest = searchTriggers.some(t => textLower.startsWith(t) || textLower.includes("can you search") || textLower.includes("can you look up") || textLower.includes("search for me"));
     if (isSearchRequest) {
-      const query = text.replace(/^(search for|look up|google|search the web for|search for me|can you search for|can you look up)\/i, "").trim();
+      const query = text.trim().split(/\s+/).slice(1).join(" ") || text.trim();
       await bot.sendMessage(chatId, "Searching for: " + query + "...");
       const results = await braveSearch(query);
       const prompt = "Josh asked you to search for: " + query + "\n\nHere are the search results:\n" + results + "\n\nSummarize what you found in a sharp, concise way. Include the most important info and a source link.";
