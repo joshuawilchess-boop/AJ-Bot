@@ -281,13 +281,6 @@ async function braveSearch(query) {
     });
   } catch(e) { return "Search error: " + e.message; }
 }
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .substring(0, 3000);
-          resolve(text);
         });
         res.on('error', reject);
       });
@@ -824,7 +817,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     if (textLower.startsWith('/kbsearch ')) {
-      const query = text.replace(/^\/kbsearch /i, '').trim();
+      const query = text.trim().replace(/^(search for|look up|google|search the web for|search for me|can you search for|can you look up)\s*/i, "").trim();
       const results = await searchKnowledge(query);
       if (results.length === 0) {
         await bot.sendMessage(chatId, 'Nothing found for: ' + query);
