@@ -1729,7 +1729,8 @@ async function load() {
               <div class="rem-time">\${fmtTime(r.remind_at)}</div>
             </div>
           </div>
-        `).join('')
+        `).join('') : '<div class="empty">No reminders set</div>'}
+      </div>
 
       <!-- Recent Knowledge -->
       <div class="card">
