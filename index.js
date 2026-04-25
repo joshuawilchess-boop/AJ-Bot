@@ -1721,16 +1721,9 @@ async function load() {
       <!-- Reminders -->
       <div class="card">
         <div class="card-label">Upcoming Reminders</div>
-        ${data.reminders.length ? data.reminders.map(r => `
-          <div class="rem-item">
-            <div class="rem-icon">⏰</div>
-            <div>
-              <div class="rem-msg">${r.message}</div>
-              <div class="rem-time">${fmtTime(r.remind_at)}</div>
-            </div>
-          </div>
-        `).join('') : '<div class="empty">No reminders set</div>'}
+        ${data.reminders.length ? data.reminders.map(r => `<div class="rem-item"><div class="rem-icon">⏰</div><div><div class="rem-msg">${r.message}</div><div class="rem-time">${fmtTime(r.remind_at)}</div></div></div>`).join('') : '<div class="empty">No reminders set</div>'}
       </div>
+
       <!-- Recent Knowledge -->
       <div class="card">
         <div class="card-label">Knowledge Base</div>
