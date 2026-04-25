@@ -1407,373 +1407,149 @@ cron.schedule('* * * * *', async () => {
 }, { timezone: 'America/Chicago' });
 
 app.get('/dashboard', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AJ — Mission Control</title>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<style>
-:root {
-  --red: #e8321a;
-  --red-bright: #ff4422;
-  --red-dim: #8b1a0a;
-  --red-glow: rgba(232,50,26,0.15);
-  --bg: #060608;
-  --bg2: #0d0d12;
-  --glass: rgba(255,255,255,0.03);
-  --glass-border: rgba(255,255,255,0.07);
-  --glass-red: rgba(232,50,26,0.08);
-  --glass-red-border: rgba(232,50,26,0.2);
-  --text: rgba(255,255,255,0.9);
-  --text-dim: rgba(255,255,255,0.4);
-  --text-dimmer: rgba(255,255,255,0.2);
-  --green: #22dd88;
-  --amber: #f0a020;
-}
-*{margin:0;padding:0;box-sizing:border-box;}
-html,body{width:100%;min-height:100%;background:var(--bg);color:var(--text);font-family:'Space Mono',monospace;overflow-x:hidden;}
-
-/* BG atmosphere */
-body::before {
-  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-  background:
-    radial-gradient(ellipse 70% 50% at 15% 50%, rgba(232,50,26,0.06) 0%, transparent 60%),
-    radial-gradient(ellipse 50% 70% at 85% 20%, rgba(232,50,26,0.04) 0%, transparent 60%),
-    radial-gradient(ellipse 80% 40% at 50% 100%, rgba(232,50,26,0.08) 0%, transparent 50%);
-}
-body::after {
-  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-  background-image:linear-gradient(rgba(255,255,255,0.012) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.012) 1px,transparent 1px);
-  background-size:40px 40px;
-}
-
-.wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:24px 20px;}
-
-/* Header */
-.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--glass-border);}
-.hdr-left{display:flex;align-items:center;gap:14px;}
-.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-
-@media (max-width: 768px) {
-  .wrap { padding: 16px 12px; }
-  .hdr { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
-  .hdr-right { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-  .stat-pill-val { font-size: 16px; }
-  .hdr-title { font-size: 13px; }
-  [style*="grid-template-columns:1fr 1fr 1fr"] { grid-template-columns: 1fr !important; }
-  [style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
-  .readiness-val { font-size: 36px; }
-  .card { padding: 16px; }
-  .card-label { font-size: 7px; }
-  .post-text { font-size: 10px; }
-  .ring-label, .ring-val { font-size: 9px; }
-  .kb-title { font-size: 10px; }
-  .rem-msg { font-size: 10px; }
-  .refresh-btn { font-size: 8px; padding: 4px 8px; }
-}
-.hdr-title{font-family:'Orbitron',sans-serif;font-weight:800;font-size:16px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}
-.hdr-title span{color:var(--red);}
-.hdr-time{font-size:10px;letter-spacing:0.1em;color:var(--text-dim);}
-.hdr-right{display:flex;gap:20px;}
-.stat-pill{display:flex;flex-direction:column;align-items:center;gap:2px;}
-.stat-pill-val{font-family:'Orbitron',sans-serif;font-weight:700;font-size:20px;color:#fff;line-height:1;}
-.stat-pill-label{font-size:8px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);}
-
-/* Grid layout */
-.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;}
-.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
-.grid-full{margin-bottom:16px;}
-
-/* Glass card */
-.card{
-  background:var(--glass);
-  border:1px solid var(--glass-border);
-  border-radius:12px;
-  padding:20px;
-  backdrop-filter:blur(20px);
-  transition:border-color 0.2s;
-  position:relative;
-  overflow:hidden;
-}
-.card::before{
-  content:'';position:absolute;inset:0;border-radius:12px;
-  background:linear-gradient(135deg,rgba(255,255,255,0.04) 0%,transparent 60%);
-  pointer-events:none;
-}
-.card:hover{border-color:rgba(255,255,255,0.12);}
-.card.red-accent{border-color:var(--glass-red-border);background:var(--glass-red);}
-.card.red-accent::before{background:linear-gradient(135deg,rgba(232,50,26,0.08) 0%,transparent 60%);}
-
-.card-label{font-size:8px;letter-spacing:0.2em;text-transform:uppercase;color:var(--text-dim);margin-bottom:14px;display:flex;align-items:center;gap:8px;}
-.card-label::after{content:'';flex:1;height:1px;background:var(--glass-border);}
-
-/* Readiness meter */
-.readiness-val{font-family:'Orbitron',sans-serif;font-weight:800;font-size:48px;color:#fff;line-height:1;margin-bottom:4px;}
-.readiness-sub{font-size:10px;color:var(--text-dim);letter-spacing:0.1em;}
-.readiness-bar{margin-top:14px;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;}
-.readiness-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--red),var(--red-bright));transition:width 1s ease;box-shadow:0 0 8px var(--red);}
-
-/* Status ring */
-.status-ring{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
-.ring-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
-.ring-dot.green{background:var(--green);box-shadow:0 0 6px var(--green);}
-.ring-dot.red{background:var(--red);box-shadow:0 0 6px var(--red);}
-.ring-dot.amber{background:var(--amber);box-shadow:0 0 6px var(--amber);}
-.ring-dot.dim{background:rgba(255,255,255,0.2);}
-.ring-label{font-size:10px;color:var(--text-dim);letter-spacing:0.05em;}
-.ring-val{font-size:10px;color:var(--text);margin-left:auto;}
-
-/* Post item */
-.post-item{padding:10px 0;border-bottom:1px solid var(--glass-border);cursor:default;}
-.post-item:last-child{border-bottom:none;}
-.post-text{font-size:11px;color:rgba(255,255,255,0.75);line-height:1.6;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.post-meta{font-size:9px;color:var(--text-dimmer);display:flex;gap:10px;}
-.post-badge{font-size:8px;padding:2px 6px;border-radius:3px;letter-spacing:0.08em;text-transform:uppercase;}
-.badge-pending{background:rgba(240,160,32,0.15);color:var(--amber);border:1px solid rgba(240,160,32,0.2);}
-.badge-posted{background:rgba(34,221,136,0.1);color:var(--green);border:1px solid rgba(34,221,136,0.15);}
-
-/* Knowledge item */
-.kb-item{padding:8px 0;border-bottom:1px solid var(--glass-border);}
-.kb-item:last-child{border-bottom:none;}
-.kb-title{font-size:11px;color:rgba(255,255,255,0.8);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.kb-cat{font-size:9px;color:var(--red);letter-spacing:0.08em;text-transform:uppercase;}
-
-/* Reminder item */
-.rem-item{padding:8px 0;border-bottom:1px solid var(--glass-border);display:flex;gap:10px;align-items:flex-start;}
-.rem-item:last-child{border-bottom:none;}
-.rem-icon{color:var(--amber);font-size:12px;flex-shrink:0;margin-top:1px;}
-.rem-msg{font-size:11px;color:rgba(255,255,255,0.8);line-height:1.4;}
-.rem-time{font-size:9px;color:var(--text-dimmer);margin-top:2px;}
-
-/* Empty state */
-.empty{font-size:11px;color:var(--text-dimmer);text-align:center;padding:20px 0;letter-spacing:0.05em;}
-
-/* X post full text tooltip */
-.post-item:hover .post-text{white-space:normal;overflow:visible;text-overflow:unset;}
-
-/* Refresh btn */
-.refresh-btn{font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);background:none;border:1px solid var(--glass-border);border-radius:4px;padding:4px 10px;cursor:pointer;transition:all 0.2s;font-family:'Space Mono',monospace;}
-.refresh-btn:hover{border-color:var(--glass-red-border);color:var(--red);}
-
-/* Loading */
-.loading{font-size:10px;color:var(--text-dimmer);letter-spacing:0.1em;text-align:center;padding:40px;}
-
-/* Activity feed */
-.activity-line{font-size:10px;color:var(--text-dim);padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;gap:10px;}
-.activity-line:last-child{border-bottom:none;}
-.activity-time{color:var(--text-dimmer);flex-shrink:0;min-width:50px;}
-.activity-text{color:rgba(255,255,255,0.6);}
-.activity-text em{color:var(--red);font-style:normal;}
-</style>
-</head>
-<body>
-<div class="wrap">
-
-  <div class="hdr">
-    <div class="hdr-left">
-      <div class="status-dot"></div>
-      <div>
-        <div class="hdr-title">AJ <span>//</span> Mission Control</div>
-        <div class="hdr-time" id="live-time">Loading...</div>
-      </div>
-    </div>
-    <div class="hdr-right">
-      <div class="stat-pill"><div class="stat-pill-val" id="s-kb">—</div><div class="stat-pill-label">Knowledge</div></div>
-      <div class="stat-pill"><div class="stat-pill-val" id="s-mem">—</div><div class="stat-pill-label">Memories</div></div>
-      <div class="stat-pill"><div class="stat-pill-val" id="s-msg">—</div><div class="stat-pill-label">Msgs Today</div></div>
-      <div class="stat-pill"><div class="stat-pill-val" id="s-post">—</div><div class="stat-pill-label">Posts</div></div>
-      <button class="refresh-btn" onclick="load()">↻ Refresh</button>
-    </div>
-  </div>
-
-  <div class="grid" id="main-grid">
-    <div class="loading">Connecting to AJ...</div>
-  </div>
-
-</div>
-
-<script>
-function timeAgo(iso) {
-  const d = new Date(iso);
-  const s = Math.floor((Date.now() - d) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s/60) + 'm ago';
-  if (s < 86400) return Math.floor(s/3600) + 'h ago';
-  return Math.floor(s/86400) + 'd ago';
-}
-
-function fmtTime(iso) {
-  return new Date(iso).toLocaleString('en-US', {
-    timeZone: 'America/Chicago',
-    month: 'short', day: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true
-  });
-}
-
-function readiness(data) {
-  let score = 40;
-  if (data.stats.knowledge > 5) score += 20;
-  if (data.stats.memories > 3) score += 10;
-  if (data.stats.messages_today > 0) score += 15;
-  if (data.stats.total_posted > 5) score += 15;
-  return Math.min(score, 98);
-}
-
-async function load() {
-  try {
-    const resp = await fetch('/api/dashboard');
-    const data = await resp.json();
-    if (!data || !data.stats) throw new Error('Invalid response: ' + JSON.stringify(data).substring(0,100));
-
-    // Stats
-    document.getElementById('s-kb').textContent = data.stats.knowledge;
-    document.getElementById('s-mem').textContent = data.stats.memories;
-    document.getElementById('s-msg').textContent = data.stats.messages_today;
-    document.getElementById('s-post').textContent = data.stats.total_posted;
-
-    const ready = readiness(data);
-
-    // Build grid
-    const grid = document.getElementById('main-grid');
-    grid.innerHTML = '';
-    grid.className = '';
-
-    grid.innerHTML = \`
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;grid-column:1/-1;">
-
-      <!-- Readiness -->
-      <div class="card red-accent">
-        <div class="card-label">Daily Readiness</div>
-        <div class="readiness-val" id="ready-val">0%</div>
-        <div class="readiness-sub">Operational capacity</div>
-        <div class="readiness-bar"><div class="readiness-fill" id="ready-bar" style="width:0%"></div></div>
-      </div>
-
-      <!-- System Status -->
-      <div class="card">
-        <div class="card-label">System Status</div>
-        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Telegram</div><div class="ring-val">Online</div></div>
-        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">X (@AJ_agentic)</div><div class="ring-val">Active</div></div>
-        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Airtable Sync</div><div class="ring-val">Connected</div></div>
-        <div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Make.com</div><div class="ring-val">3 Scenarios</div></div>
-        <div class="status-ring"><div class="ring-dot \${data.stats.pending_posts > 0 ? 'amber' : 'dim'}"></div><div class="ring-label">Pending Posts</div><div class="ring-val">\${data.stats.pending_posts}</div></div>
-      </div>
-
-      <!-- Today's Activity -->
-      <div class="card">
-        <div class="card-label">Today's Activity</div>
-        \${data.recent_posts.slice(0,3).map(p => \`
-          <div class="activity-line">
-            <div class="activity-time">\${timeAgo(p.posted_at||p.created_at)}</div>
-            <div class="activity-text">Posted to <em>@AJ_agentic</em></div>
-          </div>
-        \`).join('')
-        \${data.reminders.slice(0,2).map(r => \`
-          <div class="activity-line">
-            <div class="activity-time">\${fmtTime(r.remind_at)}</div>
-            <div class="activity-text"><em>Reminder</em> — \${r.message.substring(0,30)}\${r.message.length>30?'...':''}</div>
-          </div>
-        \`).join('')}
-        \${data.stats.messages_today > 0 ? \`<div class="activity-line"><div class="activity-time">Today</div><div class="activity-text"><em>\${data.stats.messages_today}</em> messages with Josh</div></div>\` : ''}
-        \${!data.recent_posts.length && !data.reminders.length && !data.stats.messages_today ? '<div class="empty">No activity yet today</div>' : ''}
-      </div>
-
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;grid-column:1/-1;">
-
-      <!-- Pending Posts -->
-      <div class="card">
-        <div class="card-label">Pending Approval</div>
-        \${data.pending_posts.length ? data.pending_posts.map(p => \`
-          <div class="post-item">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-              <span class="post-badge badge-pending">Pending</span>
-              <span class="post-meta">\${timeAgo(p.created_at)}</span>
-            </div>
-            <div class="post-text">\${p.content}</div>
-          </div>
-        \`).join('') : '<div class="empty">Queue is clear</div>'}
-      </div>
-
-      <!-- Recent X Posts -->
-      <div class="card">
-        <div class="card-label">Recent X Posts</div>
-        \${data.recent_posts.length ? data.recent_posts.slice(0,4).map(p => \`
-          <div class="post-item">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-              <span class="post-badge badge-posted">Posted</span>
-              <span class="post-meta">\${timeAgo(p.posted_at||p.created_at)}</span>
-              \${p.tweet_id ? \`<a href="https://x.com/AJ_agentic/status/\${p.tweet_id}" target="_blank" style="font-size:9px;color:var(--red);text-decoration:none;margin-left:auto;">↗ View</a>\` : ''}
-            </div>
-            <div class="post-text">\${p.content}</div>
-          </div>
-        \`).join('') : '<div class="empty">No posts yet</div>'}
-      </div>
-
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;grid-column:1/-1;">
-
-      <!-- Reminders -->
-      <div class="card">
-        <div class="card-label">Upcoming Reminders</div>
-        \${data.reminders.length ? data.reminders.map(r => \`<div class=\"rem-item\"><div class=\"rem-icon\">⏰</div><div><div class=\"rem-msg\">\${r.message}</div><div class=\"rem-time\">\${fmtTime(r.remind_at)}</div></div></div>\`).join('') : '<div class=\"empty\">No reminders set</div>'}
-      </div>
-
-      <!-- Recent Knowledge -->
-      <div class="card">
-        <div class="card-label">Knowledge Base</div>
-        \${data.recent_knowledge.length ? data.recent_knowledge.map(k => \`
-          <div class="kb-item">
-            <div class="kb-title">\${k.title}</div>
-            <div class="kb-cat">\${k.category}</div>
-          </div>
-        \`).join('') : '<div class="empty">Empty — add knowledge above</div>'}
-      </div>
-
-      <!-- Recent Memories -->
-      <div class="card">
-        <div class="card-label">Active Memory</div>
-        \${data.recent_memories.length ? data.recent_memories.map(m => \`
-          <div class="kb-item">
-            <div class="kb-title">\${m.content.substring(0,60)}\${m.content.length>60?'...':''}</div>
-            <div class="kb-cat">\${m.category.replace(/_/g,' ')}</div>
-          </div>
-        \`).join('') : '<div class="empty">No memories yet</div>'}
-      </div>
-
-    </div>
-    \`;
-
-    // Animate readiness
-    setTimeout(() => {
-      document.getElementById('ready-val').textContent = ready + '%';
-      document.getElementById('ready-bar').style.width = ready + '%';
-    }, 100);
-
-  } catch(e) {
-    document.getElementById('main-grid').innerHTML = '<div class="loading" style="color:var(--red)">Failed to connect to AJ — ' + e.message + '</div>';
-  }
-}
-
-// Live clock
-function clock() {
-  document.getElementById('live-time').textContent = new Date().toLocaleString('en-US', {
-    timeZone: 'America/Chicago', weekday:'short', month:'short', day:'numeric',
-    hour:'numeric', minute:'2-digit', second:'2-digit', hour12:true
-  }) + ' CT';
-}
-clock();
-setInterval(clock, 1000);
-setInterval(load, 30000);
-load();
-</script>
-</body>
-</html>`);
+  const html = [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="UTF-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<title>AJ \u2014 Mission Control</title>',
+    '<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">',
+    '<style>',
+    ':root{--red:#e8321a;--red-bright:#ff4422;--red-glow:rgba(232,50,26,0.15);--bg:#060608;--glass:rgba(255,255,255,0.03);--glass-border:rgba(255,255,255,0.07);--glass-red:rgba(232,50,26,0.08);--glass-red-border:rgba(232,50,26,0.2);--text:rgba(255,255,255,0.9);--text-dim:rgba(255,255,255,0.4);--text-dimmer:rgba(255,255,255,0.2);--green:#22dd88;--amber:#f0a020;}',
+    '*{margin:0;padding:0;box-sizing:border-box;}',
+    'html,body{width:100%;min-height:100%;background:var(--bg);color:var(--text);font-family:"Space Mono",monospace;overflow-x:hidden;}',
+    'body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 70% 50% at 15% 50%,rgba(232,50,26,0.06) 0%,transparent 60%),radial-gradient(ellipse 80% 40% at 50% 100%,rgba(232,50,26,0.08) 0%,transparent 50%);}',
+    'body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,0.012) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.012) 1px,transparent 1px);background-size:40px 40px;}',
+    '.wrap{position:relative;z-index:1;max-width:1200px;margin:0 auto;padding:24px 20px;}',
+    '.hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid var(--glass-border);}',
+    '.hdr-left{display:flex;align-items:center;gap:14px;}',
+    '.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite;}',
+    '@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}',
+    '.hdr-title{font-family:"Orbitron",sans-serif;font-weight:800;font-size:14px;letter-spacing:0.15em;text-transform:uppercase;color:#fff;}',
+    '.hdr-title span{color:var(--red);}',
+    '.hdr-time{font-size:9px;letter-spacing:0.1em;color:var(--text-dim);}',
+    '.hdr-right{display:flex;gap:20px;align-items:center;}',
+    '.stat-pill{display:flex;flex-direction:column;align-items:center;gap:2px;}',
+    '.stat-pill-val{font-family:"Orbitron",sans-serif;font-weight:700;font-size:18px;color:#fff;line-height:1;}',
+    '.stat-pill-label{font-size:8px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);}',
+    '.card{background:var(--glass);border:1px solid var(--glass-border);border-radius:12px;padding:20px;backdrop-filter:blur(20px);position:relative;overflow:hidden;}',
+    '.card::before{content:"";position:absolute;inset:0;border-radius:12px;background:linear-gradient(135deg,rgba(255,255,255,0.04) 0%,transparent 60%);pointer-events:none;}',
+    '.card.red-accent{border-color:var(--glass-red-border);background:var(--glass-red);}',
+    '.card-label{font-size:8px;letter-spacing:0.2em;text-transform:uppercase;color:var(--text-dim);margin-bottom:14px;display:flex;align-items:center;gap:8px;}',
+    '.card-label::after{content:"";flex:1;height:1px;background:var(--glass-border);}',
+    '.readiness-val{font-family:"Orbitron",sans-serif;font-weight:800;font-size:48px;color:#fff;line-height:1;margin-bottom:4px;}',
+    '.readiness-sub{font-size:10px;color:var(--text-dim);letter-spacing:0.1em;}',
+    '.readiness-bar{margin-top:14px;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;}',
+    '.readiness-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--red),var(--red-bright));transition:width 1s ease;box-shadow:0 0 8px var(--red);}',
+    '.status-ring{display:flex;align-items:center;gap:10px;margin-bottom:8px;}',
+    '.ring-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}',
+    '.ring-dot.green{background:var(--green);box-shadow:0 0 6px var(--green);}',
+    '.ring-dot.amber{background:var(--amber);box-shadow:0 0 6px var(--amber);}',
+    '.ring-dot.dim{background:rgba(255,255,255,0.2);}',
+    '.ring-label{font-size:10px;color:var(--text-dim);letter-spacing:0.05em;}',
+    '.ring-val{font-size:10px;color:var(--text);margin-left:auto;}',
+    '.post-item{padding:8px 0;border-bottom:1px solid var(--glass-border);}',
+    '.post-item:last-child{border-bottom:none;}',
+    '.post-text{font-size:11px;color:rgba(255,255,255,0.75);line-height:1.5;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.post-meta{font-size:9px;color:var(--text-dimmer);display:flex;gap:8px;align-items:center;}',
+    '.post-badge{font-size:8px;padding:2px 6px;border-radius:3px;letter-spacing:0.08em;text-transform:uppercase;}',
+    '.badge-pending{background:rgba(240,160,32,0.15);color:var(--amber);border:1px solid rgba(240,160,32,0.2);}',
+    '.badge-posted{background:rgba(34,221,136,0.1);color:var(--green);border:1px solid rgba(34,221,136,0.15);}',
+    '.kb-item{padding:7px 0;border-bottom:1px solid var(--glass-border);}',
+    '.kb-item:last-child{border-bottom:none;}',
+    '.kb-title{font-size:11px;color:rgba(255,255,255,0.8);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.kb-cat{font-size:9px;color:var(--red);letter-spacing:0.08em;text-transform:uppercase;}',
+    '.rem-item{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:1px solid var(--glass-border);}',
+    '.rem-item:last-child{border-bottom:none;}',
+    '.rem-msg{font-size:11px;color:rgba(255,255,255,0.8);line-height:1.4;}',
+    '.rem-time{font-size:9px;color:var(--text-dimmer);margin-top:2px;}',
+    '.activity-line{font-size:10px;color:var(--text-dim);padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);display:flex;gap:10px;}',
+    '.activity-time{color:var(--text-dimmer);flex-shrink:0;min-width:50px;}',
+    '.activity-em{color:var(--red);}',
+    '.empty{font-size:11px;color:var(--text-dimmer);text-align:center;padding:16px 0;}',
+    '.refresh-btn{font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:var(--text-dim);background:none;border:1px solid var(--glass-border);border-radius:4px;padding:4px 10px;cursor:pointer;font-family:"Space Mono",monospace;}',
+    '.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;}',
+    '.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}',
+    '@media(max-width:768px){.g3,.g2{grid-template-columns:1fr;}.hdr{flex-direction:column;gap:12px;}.hdr-right{flex-wrap:wrap;}}',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<div class="wrap">',
+    '<div class="hdr">',
+    '<div class="hdr-left"><div class="status-dot"></div><div><div class="hdr-title">AJ <span>//</span> Mission Control</div><div class="hdr-time" id="live-time"></div></div></div>',
+    '<div class="hdr-right">',
+    '<div class="stat-pill"><div class="stat-pill-val" id="s-kb">-</div><div class="stat-pill-label">Knowledge</div></div>',
+    '<div class="stat-pill"><div class="stat-pill-val" id="s-mem">-</div><div class="stat-pill-label">Memories</div></div>',
+    '<div class="stat-pill"><div class="stat-pill-val" id="s-msg">-</div><div class="stat-pill-label">Msgs Today</div></div>',
+    '<div class="stat-pill"><div class="stat-pill-val" id="s-post">-</div><div class="stat-pill-label">Posts</div></div>',
+    '<button class="refresh-btn" onclick="load()">&#8635; Refresh</button>',
+    '</div></div>',
+    '<div id="main"><div style="text-align:center;padding:60px;color:var(--text-dimmer);font-size:11px;letter-spacing:0.1em;">Connecting to AJ...</div></div>',
+    '</div>',
+    '<script>',
+    'function timeAgo(iso){const s=Math.floor((Date.now()-new Date(iso))/1000);if(s<60)return s+"s ago";if(s<3600)return Math.floor(s/60)+"m ago";if(s<86400)return Math.floor(s/3600)+"h ago";return Math.floor(s/86400)+"d ago";}',
+    'function fmtTime(iso){return new Date(iso).toLocaleString("en-US",{timeZone:"America/Chicago",month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true});}',
+    'function readiness(d){let s=40;if(d.stats.knowledge>5)s+=20;if(d.stats.memories>3)s+=10;if(d.stats.messages_today>0)s+=15;if(d.stats.total_posted>5)s+=15;return Math.min(s,98);}',
+    'async function load(){try{',
+    '  const data=await fetch("/api/dashboard").then(r=>r.json());',
+    '  if(!data||!data.stats)throw new Error(JSON.stringify(data));',
+    '  document.getElementById("s-kb").textContent=data.stats.knowledge;',
+    '  document.getElementById("s-mem").textContent=data.stats.memories;',
+    '  document.getElementById("s-msg").textContent=data.stats.messages_today;',
+    '  document.getElementById("s-post").textContent=data.stats.total_posted;',
+    '  const ready=readiness(data);',
+    '  let html="";',
+    '  html+=`<div class="g3">`;',
+    '  html+=`<div class="card red-accent"><div class="card-label">Daily Readiness</div><div class="readiness-val" id="rv">0%</div><div class="readiness-sub">Operational capacity</div><div class="readiness-bar"><div class="readiness-fill" id="rf" style="width:0%"></div></div></div>`;',
+    '  html+=`<div class="card"><div class="card-label">System Status</div>`;',
+    '  html+=`<div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Telegram</div><div class="ring-val">Online</div></div>`;',
+    '  html+=`<div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">X (@AJ_agentic)</div><div class="ring-val">Active</div></div>`;',
+    '  html+=`<div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Airtable Sync</div><div class="ring-val">Connected</div></div>`;',
+    '  html+=`<div class="status-ring"><div class="ring-dot green"></div><div class="ring-label">Make.com</div><div class="ring-val">3 Scenarios</div></div>`;',
+    '  html+=`<div class="status-ring"><div class="ring-dot ${data.stats.pending_posts>0?"amber":"dim"}"></div><div class="ring-label">Pending Posts</div><div class="ring-val">${data.stats.pending_posts}</div></div>`;',
+    '  html+=`</div>`;',
+    '  html+=`<div class="card"><div class="card-label">Today Activity</div>`;',
+    '  if(data.recent_posts.length>0)data.recent_posts.slice(0,3).forEach(p=>{html+=`<div class="activity-line"><div class="activity-time">${timeAgo(p.created_at)}</div><div>Posted to <span class="activity-em">@AJ_agentic</span></div></div>`;});',
+    '  if(data.stats.messages_today>0)html+=`<div class="activity-line"><div class="activity-time">Today</div><div><span class="activity-em">${data.stats.messages_today}</span> messages with Josh</div></div>`;',
+    '  if(!data.recent_posts.length&&!data.stats.messages_today)html+=`<div class="empty">No activity yet</div>`;',
+    '  html+=`</div></div>`;',
+    '  html+=`<div class="g2">`;',
+    '  html+=`<div class="card"><div class="card-label">Pending Approval</div>`;',
+    '  if(data.pending_posts.length>0)data.pending_posts.forEach(p=>{html+=`<div class="post-item"><div class="post-meta"><span class="post-badge badge-pending">Pending</span><span>${timeAgo(p.created_at)}</span></div><div class="post-text">${p.content}</div></div>`;});',
+    '  else html+=`<div class="empty">Queue is clear</div>`;',
+    '  html+=`</div>`;',
+    '  html+=`<div class="card"><div class="card-label">Recent X Posts</div>`;',
+    '  if(data.recent_posts.length>0)data.recent_posts.slice(0,4).forEach(p=>{html+=`<div class="post-item"><div class="post-meta"><span class="post-badge badge-posted">Posted</span><span>${timeAgo(p.created_at)}</span></div><div class="post-text">${p.content}</div></div>`;});',
+    '  else html+=`<div class="empty">No posts yet</div>`;',
+    '  html+=`</div></div>`;',
+    '  html+=`<div class="g3">`;',
+    '  html+=`<div class="card"><div class="card-label">Upcoming Reminders</div>`;',
+    '  html+=`<div style="font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:rgba(255,255,255,0.2);margin-bottom:10px;">SATURDAY</div>`;',
+    '  html+=`<div class="rem-item"><span style="font-size:13px;">✅</span><div><div class="rem-msg" style="color:rgba(34,221,136,0.85);text-decoration:line-through;opacity:0.7;">Follow up on 4 Warm Leads for Overflow</div></div></div>`;',
+    '  html+=`<div class="rem-item"><span style="font-size:13px;">🟡</span><div><div class="rem-msg">Remind Josh about AJ Marketing Campaign</div></div></div>`;',
+    '  html+=`<div class="rem-item"><span style="font-size:13px;">🟡</span><div><div class="rem-msg">Adjust 2nd Brain</div></div></div>`;',
+    '  html+=`<div class="rem-item"><span style="font-size:13px;">🟡</span><div><div class="rem-msg">X Growth Plan</div></div></div>`;',
+    '  if(data.reminders.length>0){html+=`<div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:8px;">`;data.reminders.forEach(r=>{html+=`<div class="rem-item"><div style="font-size:12px;">\u23F0</div><div><div class="rem-msg">${r.message}</div><div class="rem-time">${fmtTime(r.remind_at)}</div></div></div>`;});html+=`</div>`;}',
+    '  html+=`</div>`;',
+    '  html+=`<div class="card"><div class="card-label">Knowledge Base</div>`;',
+    '  if(data.recent_knowledge.length>0)data.recent_knowledge.forEach(k=>{html+=`<div class="kb-item"><div class="kb-title">${k.title}</div><div class="kb-cat">${k.category}</div></div>`;});',
+    '  else html+=`<div class="empty">Empty</div>`;',
+    '  html+=`</div>`;',
+    '  html+=`<div class="card"><div class="card-label">Active Memory</div>`;',
+    '  if(data.recent_memories.length>0)data.recent_memories.forEach(m=>{html+=`<div class="kb-item"><div class="kb-title">${m.content.substring(0,55)}${m.content.length>55?"...":""}</div><div class="kb-cat">${m.category.replace(/_/g," ")}</div></div>`;});',
+    '  else html+=`<div class="empty">No memories</div>`;',
+    '  html+=`</div></div>`;',
+    '  document.getElementById("main").innerHTML=html;',
+    '  setTimeout(()=>{const rv=document.getElementById("rv");const rf=document.getElementById("rf");if(rv)rv.textContent=ready+"%";if(rf)rf.style.width=ready+"%";},100);',
+    '}catch(e){document.getElementById("main").innerHTML=`<div style="text-align:center;padding:60px;color:var(--red);font-size:11px;">Failed to connect to AJ \u2014 ${e.message}</div>`;}}',
+    'function clock(){document.getElementById("live-time").textContent=new Date().toLocaleString("en-US",{timeZone:"America/Chicago",weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit",hour12:true})+" CT";}',
+    'clock();setInterval(clock,1000);setInterval(load,30000);load();',
+    '</script>',
+    '</body>',
+    '</html>'
+  ].join('\n');
+  res.send(html);
 });
 
 app.get('/', (req, res) => {
