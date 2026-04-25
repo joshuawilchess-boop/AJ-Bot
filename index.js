@@ -1670,7 +1670,7 @@ async function load() {
             <div class="activity-time">\${timeAgo(p.posted_at||p.created_at)}</div>
             <div class="activity-text">Posted to <em>@AJ_agentic</em></div>
           </div>
-        \`).join('')}
+        \`).join('')
         \${data.reminders.slice(0,2).map(r => \`
           <div class="activity-line">
             <div class="activity-time">\${fmtTime(r.remind_at)}</div>
