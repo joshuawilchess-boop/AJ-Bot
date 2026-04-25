@@ -1729,7 +1729,14 @@ async function load() {
               <div class="rem-time">\${fmtTime(r.remind_at)}</div>
             </div>
           </div>
-        \`).join('') : '<div class="empty">No reminders set</div>'}
+        \`).join('')}
+        <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:10px;">
+          <div style="font-size:9px;letter-spacing:0.15em;text-transform:uppercase;color:rgba(255,255,255,0.2);margin-bottom:10px;">SATURDAY</div>
+          <div class="rem-item"><span style="font-size:13px;flex-shrink:0;margin-top:1px;">✅</span><div><div class="rem-msg" style="color:rgba(34,221,136,0.85);text-decoration:line-through;opacity:0.7;">Follow up on 4 Warm Leads for Overflow</div></div></div>
+          <div class="rem-item"><span style="font-size:13px;flex-shrink:0;margin-top:1px;">🟡</span><div><div class="rem-msg">Remind Josh about AJ Marketing Campaign</div></div></div>
+          <div class="rem-item"><span style="font-size:13px;flex-shrink:0;margin-top:1px;">🟡</span><div><div class="rem-msg">Adjust 2nd Brain</div></div></div>
+          <div class="rem-item"><span style="font-size:13px;flex-shrink:0;margin-top:1px;">🟡</span><div><div class="rem-msg">X Growth Plan</div></div></div>
+        </div>
       </div>
 
       <!-- Recent Knowledge -->
