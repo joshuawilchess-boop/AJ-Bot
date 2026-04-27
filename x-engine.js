@@ -488,8 +488,16 @@ async function checkMentions(manual = false) {
     if (newCount === 0 && manual) {
     }
   } catch (e) {
-    console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
-    if (manual && telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention check error: ' + e.message);
+    console.error('checkMentions error:', e.message);
+    // Auto-reset since_id if X rejects it as too old
+    if (e.message && e.message.includes('since_id')) {
+      try {
+        await pool.query("UPDATE memories SET content = '0' WHERE category = 'last_mention_id'");
+        console.log('Auto-reset last_mention_id due to stale since_id');
+      } catch(dbErr) { console.error('Reset error:', dbErr.message); }
+    }
+    // Only notify Josh on manual scans
+    if (manual && telegramBot) await telegramBot.sendMessage(joshuaChatId, 'Mention scan reset — will retry next cycle.');
   }
 }
 
