@@ -99,7 +99,18 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  console.log('Database ready');
+  
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS image_vault (
+      id SERIAL PRIMARY KEY,
+      file_id TEXT NOT NULL,
+      file_unique_id TEXT,
+      tag TEXT,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+console.log('Database ready');
 }
 
 // ── CONVERSATION HISTORY ──────────────────────────────────
@@ -733,6 +744,43 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       return;
     }
 
+    // Image vault commands
+    if (textLower.startsWith('/saveimage ') || textLower.startsWith('/img save ')) {
+      await bot.sendMessage(chatId, 'Send me the image with your caption or tag and I will save it automatically. Just send any image with a caption and I will remember it.');
+      return;
+    }
+
+    if (textLower.startsWith('/images') || textLower === '/vault') {
+      try {
+        const { rows } = await pool.query('SELECT id, tag, description, created_at FROM image_vault ORDER BY created_at DESC LIMIT 20');
+        if (rows.length === 0) { await bot.sendMessage(chatId, 'No images saved yet. Send me any image with a caption and I will save it.'); return; }
+        const list = rows.map((r, i) => (i+1) + '. ' + (r.tag || 'untagged') + (r.description ? ' — ' + r.description.substring(0,40) : '')).join('\n');
+        await bot.sendMessage(chatId, 'Saved images:\n\n' + list + '\n\nSay "send me [tag]" to get one back.');
+      } catch(e) { await bot.sendMessage(chatId, 'Error loading image vault.'); }
+      return;
+    }
+
+    // Natural language image recall
+    const sendImageTriggers = ['send me the', 'show me the', 'get the', 'pull up the', 'send the', 'show the'];
+    const isImageRecall = sendImageTriggers.some(t => textLower.startsWith(t)) && 
+      (textLower.includes('image') || textLower.includes('photo') || textLower.includes('pic') || textLower.includes('logo') || textLower.includes('file'));
+    
+    if (isImageRecall || textLower.startsWith('/getimage ')) {
+      const searchTerm = text.replace(/^\/getimage /i, '').replace(/^(send me the|show me the|get the|pull up the|send the|show the)/i, '').replace(/image|photo|pic|logo|file/gi, '').trim().toLowerCase();
+      try {
+        const { rows } = await pool.query(
+          "SELECT file_id, tag, description FROM image_vault WHERE tag ILIKE $1 OR description ILIKE $1 ORDER BY created_at DESC LIMIT 1",
+          ['%' + searchTerm + '%']
+        );
+        if (rows.length === 0) {
+          await bot.sendMessage(chatId, 'No image found for "' + searchTerm + '". Type /images to see all saved images.');
+        } else {
+          await bot.sendPhoto(chatId, rows[0].file_id, { caption: rows[0].description || rows[0].tag });
+        }
+      } catch(e) { await bot.sendMessage(chatId, 'Error retrieving image: ' + e.message); }
+      return;
+    }
+
     if (textLower.startsWith('/remember ')) {
       const note = text.replace(/^\/remember /i, '').trim();
       const key = 'note_' + Date.now();
@@ -1049,6 +1097,23 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     // ── IMAGE HANDLER ────────────────────────────────────
     if (hasPhoto) {
+      // Save image to vault if user includes a tag/name
+      const photoArray = update.message.photo;
+      const fileId = photoArray ? photoArray[photoArray.length - 1].file_id : update.message.document.file_id;
+      const fileUniqueId = photoArray ? photoArray[photoArray.length - 1].file_unique_id : update.message.document.file_unique_id;
+      const caption = update.message.caption || '';
+      
+      // Auto-save every image with caption as tag
+      if (caption || text) {
+        const tag = (caption || text).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().substring(0, 50);
+        try {
+          await pool.query(
+            'INSERT INTO image_vault (file_id, file_unique_id, tag, description) VALUES ($1, $2, $3, $4)',
+            [fileId, fileUniqueId, tag, caption || text]
+          );
+          console.log('Image saved to vault with tag:', tag);
+        } catch(e) { console.error('Image vault save error:', e.message); }
+      }
       try {
         const photoArray = update.message.photo;
         const fileId = photoArray ? photoArray[photoArray.length - 1].file_id : update.message.document.file_id;
