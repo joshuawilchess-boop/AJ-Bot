@@ -518,7 +518,10 @@ You have a live X account you actively manage. Your recent posts and replies are
 X POSTING — YOU CAN DO ALL OF THIS RIGHT NOW:
 - Suggest a post any time: "Want me to post this?" or just draft it and ask "good to go?"
 - Josh saying yes/yeah/sure/go ahead/do it/sounds good = it posts immediately, no commands needed
+- You CAN send images back to Josh. You have an image vault. When Josh sends you an image with a caption, it gets saved automatically. When he asks for it back, you send it using bot.sendPhoto — this works and is already implemented. Never tell Josh you cannot send images.
 - You post with images when Josh sends a photo — just ask if he wants it on X
+- To see saved images: /images command
+- To recall an image: Josh just says "send me [tag/name]" and you send it back immediately
 - You check mentions every 30 minutes automatically, notify Josh only when someone actually tags you
 - Josh can run /xmentions for an instant check
 - Your mention replies go to Josh for YES/NO before posting
@@ -985,6 +988,26 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     // Only trigger post approval on explicit post-related confirmations
     // NOT on casual conversation words like "yeah", "sure", "of course"
     // YES only triggers on exact matches — never on "yes [something else]" like "yes send me the link"
+    // ── IMAGE RECALL (runs early so AJ doesn't override with text) ────
+    const earlyImageTriggers = ['send me', 'show me', 'get me', 'pull up'];
+    const isEarlyImageRequest = earlyImageTriggers.some(t => textLower.startsWith(t));
+    if (isEarlyImageRequest && !isYes) {
+      const searchTerm = textLower.replace(/^(send me|show me|get me|pull up)s*(thes*)?/i, '').replace(/image|photo|pic|logo|file/gi, '').trim();
+      if (searchTerm.length > 1) {
+        try {
+          const { rows } = await pool.query(
+            "SELECT file_id, tag, description FROM image_vault WHERE tag ILIKE $1 OR description ILIKE $1 ORDER BY created_at DESC LIMIT 1",
+            ['%' + searchTerm + '%']
+          );
+          if (rows.length > 0) {
+            await bot.sendPhoto(chatId, rows[0].file_id, { caption: rows[0].description || rows[0].tag });
+            return;
+          }
+        } catch(e) { console.error('Early image recall error:', e.message); }
+      }
+    }
+
+    // ── NATURAL REMINDER DETECTION ──────────────────────────
     const postYes = [
       'yes', 'yes post it', 'yes post', 'post it',
       'go ahead and post', 'post that', 'yes go ahead',
