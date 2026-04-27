@@ -762,8 +762,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
     // Natural language image recall
     const sendImageTriggers = ['send me the', 'show me the', 'get the', 'pull up the', 'send the', 'show the'];
-    const isImageRecall = sendImageTriggers.some(t => textLower.startsWith(t)) && 
-      (textLower.includes('image') || textLower.includes('photo') || textLower.includes('pic') || textLower.includes('logo') || textLower.includes('file'));
+    const isImageRecall = sendImageTriggers.some(t => textLower.startsWith(t));
     
     if (isImageRecall || textLower.startsWith('/getimage ')) {
       const searchTerm = text.replace(/^\/getimage /i, '').replace(/^(send me the|show me the|get the|pull up the|send the|show the)/i, '').replace(/image|photo|pic|logo|file/gi, '').trim().toLowerCase();
@@ -772,13 +771,18 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
           "SELECT file_id, tag, description FROM image_vault WHERE tag ILIKE $1 OR description ILIKE $1 ORDER BY created_at DESC LIMIT 1",
           ['%' + searchTerm + '%']
         );
-        if (rows.length === 0) {
-          await bot.sendMessage(chatId, 'No image found for "' + searchTerm + '". Type /images to see all saved images.');
-        } else {
+        if (rows.length > 0) {
+          // Found in vault — send it
           await bot.sendPhoto(chatId, rows[0].file_id, { caption: rows[0].description || rows[0].tag });
+          return;
         }
-      } catch(e) { await bot.sendMessage(chatId, 'Error retrieving image: ' + e.message); }
-      return;
+        // Nothing found — fall through to normal AJ conversation
+        if (textLower.startsWith('/getimage ')) {
+          await bot.sendMessage(chatId, 'No image found for "' + searchTerm + '". Type /images to see all saved images.');
+          return;
+        }
+        // Otherwise let AJ handle it naturally
+      } catch(e) { console.error('Image recall error:', e.message); }
     }
 
     if (textLower.startsWith('/remember ')) {
