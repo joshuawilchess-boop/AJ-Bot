@@ -1052,7 +1052,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
         }
         // Nothing to post — pass to AJ normally
         const reply = await getAJResponse(chatId, text);
-        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
         return;
       }
 
@@ -1114,7 +1114,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       if (rows.length === 0) {
         // No pending post — let AJ handle it normally
         const reply = await getAJResponse(chatId, text);
-        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
         return;
       }
       await pool.query("UPDATE pending_x_posts SET status = 'rejected' WHERE id = $1", [rows[0].id]);
@@ -1217,7 +1217,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
         if (needsResponse) {
           const reply = await getAJResponse(chatId, userPrompt);
-          await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+          await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
         }
         // If no caption and no text — silent analysis, just save to memory, no reply
 
@@ -1241,7 +1241,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const results = await braveSearch(query);
       const prompt = "Josh asked you to search for: " + query + "\n\nHere are the search results:\n" + results + "\n\nSummarize what you found in a sharp, concise way. Include the most important info and a source link.";
       const reply = await getAJResponse(chatId, prompt);
-      await bot.sendMessage(chatId, reply, { parse_mode: "Markdown" });
+      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
       return;
     }
 
@@ -1256,7 +1256,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const key = 'note_' + Date.now();
       await saveMemory(key, noteContent);
       const reply = await getAJResponse(chatId, text);
-      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
       return;
     }
 
@@ -1308,7 +1308,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     }
 
     const reply = await getAJResponse(chatId, enrichedMessage);
-    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' }).catch(() => bot.sendMessage(chatId, reply.replace(/[*_`\[\]]/g, ''), {}));
 
   } catch (err) {
     console.error('Webhook error:', err);
