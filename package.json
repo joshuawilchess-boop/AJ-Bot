@@ -4,7 +4,8 @@
   "description": "AJ — Autonomous AI agent with web search, memory, and proactive tasks",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
