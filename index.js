@@ -17,6 +17,33 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const bot = new TelegramBot(TELEGRAM_TOKEN);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
+// ── SDR PIPELINE WIRING ──────────────────────────────────
+const { makeLeadsRepo } = require('./sdr/leadsRepo');
+const { seedPlaybook, loadPlaybook } = require('./sdr/playbook');
+const { makeManualSource } = require('./sdr/sources/manualSource');
+const { makePipeline } = require('./sdr/pipeline');
+const { askJson } = require('./sdr/llm');
+
+const leadsRepo = makeLeadsRepo((sql, params) => pool.query(sql, params));
+const manualSource = makeManualSource(leadsRepo);
+const sdrLlm = (prompt) => askJson(client, prompt, { maxTokens: 1024 });
+
+async function fetchText(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  const html = await res.text();
+  return html.replace(/<script[\s\S]*?<\/script>/gi, ' ')
+             .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+             .replace(/<[^>]+>/g, ' ')
+             .replace(/\s+/g, ' ')
+             .trim();
+}
+
+async function runSdrTick() {
+  const playbook = await loadPlaybook((sql, params) => pool.query(sql, params));
+  const pipeline = makePipeline({ repo: leadsRepo, playbook, fetchText, llm: sdrLlm });
+  await pipeline.tick();
+}
+
 // ── DATABASE ──────────────────────────────────────────────
 async function initDB() {
   await pool.query(`
@@ -110,6 +137,9 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
+
+  await leadsRepo.init();
+  await seedPlaybook((sql, params) => pool.query(sql, params));
 console.log('Database ready');
 }
 
@@ -730,6 +760,19 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
     if (text === '/clear') {
       await pool.query('DELETE FROM conversations WHERE chat_id = $1', [chatId]);
       await bot.sendMessage(chatId, 'Conversation cleared. Fresh start.');
+      return;
+    }
+
+    if (text.startsWith('/leads')) {
+      const arg = text.replace('/leads', '').trim();
+      if (arg) {
+        const lead = await manualSource.addByDomain(arg);
+        await bot.sendMessage(chatId, `Added lead: ${lead.domain} (queued for sourcing→draft).`);
+      } else {
+        const counts = await leadsRepo.stageCounts();
+        const lines = Object.entries(counts).map(([s, n]) => `${s}: ${n}`).join('\n') || 'no leads yet';
+        await bot.sendMessage(chatId, `SDR pipeline:\n${lines}`);
+      }
       return;
     }
 
@@ -1417,7 +1460,7 @@ app.get('/api/test-airtable', async (req, res) => {
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders] = await Promise.all([
+    const [pending, posted, kbCount, memCount, convCount, recentKb, recentMem, reminders, leadStages] = await Promise.all([
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='pending' ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT id, content, post_type, created_at FROM pending_x_posts WHERE status='approved' ORDER BY created_at DESC LIMIT 10"),
       pool.query("SELECT COUNT(*) FROM knowledge"),
@@ -1425,7 +1468,8 @@ app.get('/api/dashboard', async (req, res) => {
       pool.query("SELECT COUNT(*) FROM conversations WHERE created_at > NOW() - INTERVAL '24 hours' AND role='user'"),
       pool.query("SELECT title, category, created_at FROM knowledge ORDER BY created_at DESC LIMIT 5"),
       pool.query("SELECT category, content FROM memories WHERE category NOT LIKE 'last_%' AND category NOT LIKE 'pending_%' AND category NOT LIKE 'processed_%' ORDER BY id DESC LIMIT 5"),
-      pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]}))
+      pool.query("SELECT message, remind_at FROM reminders WHERE fired=FALSE ORDER BY remind_at ASC LIMIT 5").catch(()=>({rows:[]})),
+      pool.query("SELECT stage, COUNT(*)::int AS n FROM leads GROUP BY stage").catch(()=>({rows:[]}))
     ]);
 
     res.json({
@@ -1442,7 +1486,8 @@ app.get('/api/dashboard', async (req, res) => {
       recent_posts: posted.rows,
       reminders: reminders.rows,
       recent_knowledge: recentKb.rows,
-      recent_memories: recentMem.rows
+      recent_memories: recentMem.rows,
+      pipeline: leadStages.rows.reduce((a, r) => (a[r.stage] = r.n, a), {})
     });
   } catch(e) {
     res.status(500).json({ error: e.message });
@@ -1497,6 +1542,12 @@ cron.schedule('* * * * *', async () => {
     }
   } catch(e) { console.error('Reminder check error:', e.message); }
 }, { timezone: 'America/Chicago' });
+
+// Run the SDR pipeline every 10 minutes
+cron.schedule('*/10 * * * *', async () => {
+  try { await runSdrTick(); }
+  catch (e) { console.error('SDR tick error:', e.message); }
+});
 
 app.get('/dashboard', (req, res) => {
   const html = [
