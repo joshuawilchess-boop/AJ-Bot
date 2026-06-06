@@ -30,7 +30,7 @@ function makePipeline({ repo, playbook, fetchText, llm }) {
       await repo.advance(lead.id, 'drafted', { draft: JSON.stringify(email) });
     }
 
-    // drafted -> QA -> queued | stay drafted
+    // drafted -> QA -> queued | lost (parked; re-draft+retry deferred to a later plan)
     for (const lead of await repo.listByStage('drafted', BATCH)) {
       const email = safeParse(lead.draft);
       const r = lead.research_json || {};
@@ -38,7 +38,7 @@ function makePipeline({ repo, playbook, fetchText, llm }) {
       if (verdict.pass) {
         await repo.advance(lead.id, 'queued', {});
       } else {
-        await repo.advance(lead.id, 'drafted', {
+        await repo.advance(lead.id, 'lost', {
           qualification_notes: 'QA failed: ' + verdict.issues.join('; ')
         });
       }

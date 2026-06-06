@@ -767,7 +767,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const arg = text.replace('/leads', '').trim();
       if (arg) {
         const lead = await manualSource.addByDomain(arg);
-        await bot.sendMessage(chatId, `Added lead: ${lead.domain} (queued for sourcing→draft).`);
+        await bot.sendMessage(chatId, `Added lead: ${lead.domain} — entering pipeline (qualify → research → draft).`);
       } else {
         const counts = await leadsRepo.stageCounts();
         const lines = Object.entries(counts).map(([s, n]) => `${s}: ${n}`).join('\n') || 'no leads yet';

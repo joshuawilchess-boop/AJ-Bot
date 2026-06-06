@@ -43,14 +43,38 @@ test('tick on a drafted lead that passes QA moves it to queued', async () => {
   assert.ok(q, 'expected a lead to reach queued');
 });
 
-test('tick on a drafted lead that fails QA keeps it drafted with issues', async () => {
+test('tick on a drafted lead that fails QA is parked in lost with issues', async () => {
   const repo = repoWith({ drafted: [{ id: 4, domain: 'd.com', draft: 'hi', research_json: { hook: 'h' } }] });
   const pipe = makePipeline({
     repo, playbook: 'P', fetchText: async () => '',
     llm: async () => ({ score: 30, issues: ['too generic'] })
   });
   await pipe.tick();
-  const back = repo.advanced.find(a => a.stage === 'drafted');
-  assert.ok(back);
-  assert.match(back.patch.qualification_notes, /too generic/);
+  const parked = repo.advanced.find(a => a.stage === 'lost');
+  assert.ok(parked, 'expected the QA-failed lead to be parked in lost');
+  assert.match(parked.patch.qualification_notes, /too generic/);
+});
+
+test('tick researches a qualified lead and drafts a researched lead', async () => {
+  const repo = repoWith({
+    qualified: [{ id: 5, domain: 'e.com' }],
+    researched: [{ id: 6, domain: 'f.com', research_json: { hook: 'no win-back flow', leak_hypothesis: 'lost buyers', signals: [] } }]
+  });
+  const pipe = makePipeline({
+    repo, playbook: 'P',
+    fetchText: async () => 'homepage text',
+    llm: async () => ({
+      // research output shape
+      hook: 'no upsell', leak_hypothesis: 'leak', signals: [],
+      // draft output shape (same fake serves both calls)
+      subject: 's', body: 'b'
+    })
+  });
+  await pipe.tick();
+  const researched = repo.advanced.find(a => a.id === 5 && a.stage === 'researched');
+  assert.ok(researched, 'qualified lead should advance to researched');
+  assert.ok(researched.patch.research_json, 'research_json should be set');
+  const drafted = repo.advanced.find(a => a.id === 6 && a.stage === 'drafted');
+  assert.ok(drafted, 'researched lead should advance to drafted');
+  assert.ok(drafted.patch.draft, 'draft should be set');
 });
