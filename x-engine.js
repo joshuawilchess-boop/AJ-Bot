@@ -155,7 +155,7 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
     }
     return tweetId;
   } catch (e) {
-    console.error('postToX error:', e.message);
+    console.error('postToX error:', e.message, e.data ? JSON.stringify(e.data) : '');
     return null;
   }
 }
