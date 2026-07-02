@@ -492,7 +492,7 @@ async function checkMentions(manual = false) {
     // Auto-reset since_id if X rejects it as too old - silent, no Telegram message
     if (e.message && e.message.includes('since_id')) {
       try {
-        await pool.query("INSERT INTO memories (category, content) VALUES ('last_mention_id', '0') ON CONFLICT (category) DO UPDATE SET content = '0'");
+        await pool.query("UPDATE memories SET content = '0' WHERE category = 'last_mention_id'");
         console.log('Auto-reset last_mention_id');
       } catch(dbErr) { console.error('Reset error:', dbErr.message); }
     }
