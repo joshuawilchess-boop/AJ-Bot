@@ -488,12 +488,12 @@ async function checkMentions(manual = false) {
     if (newCount === 0 && manual) {
     }
   } catch (e) {
-    console.error('checkMentions error:', e.message);
-    // Auto-reset since_id if X rejects it as too old - silent, no Telegram message
-    if (e.message && e.message.includes('since_id')) {
+    console.error('checkMentions error:', e.message, e.data ? JSON.stringify(e.data) : '');
+    // X returns 400 when since_id is stale/invalid - clear it so next check starts fresh
+    if (e.code === 400) {
       try {
-        await pool.query("UPDATE memories SET content = '0' WHERE category = 'last_mention_id'");
-        console.log('Auto-reset last_mention_id');
+        await pool.query("DELETE FROM memories WHERE category = 'last_mention_id'");
+        console.log('Cleared stale last_mention_id');
       } catch(dbErr) { console.error('Reset error:', dbErr.message); }
     }
   }
@@ -522,7 +522,9 @@ async function markMentionProcessed(tweetId) {
 async function getLastMentionId() {
   try {
     const { rows } = await pool.query("SELECT content FROM memories WHERE category = 'last_mention_id' LIMIT 1");
-    return rows.length > 0 ? rows[0].content : undefined;
+    // '0' or empty is not a valid since_id - treat as no saved ID
+    const id = rows.length > 0 ? rows[0].content : undefined;
+    return id && id !== '0' ? id : undefined;
   } catch (e) { return undefined; }
 }
 
