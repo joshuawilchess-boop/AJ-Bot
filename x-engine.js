@@ -306,8 +306,17 @@ async function sendForApproval(content, postType) {
     }
   } catch(e) { console.error('saveMemory error:', e.message); }
 
-  const safe = content.replace(/[*_`\[\]]/g, '');
-  await telegramBot.sendMessage(joshuaChatId, 'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip · or tell me what to change');
+  let msg;
+  if (postType === 'thread') {
+    const tweets = content.split(/\n\s*---\s*\n/).map(t => t.trim()).filter(t => t.length > 0);
+    const numbered = tweets.map((t, i) => (i + 1) + '/' + tweets.length + '  ' + t.replace(/[*_`\[\]]/g, '')).join('\n\n');
+    msg = '🧵 Thread ready — these ' + tweets.length + ' tweets post together as one chain:\n\n' + numbered +
+      '\n\nYES posts the whole thread · NO to skip · or tell me what to change';
+  } else {
+    const safe = content.replace(/[*_`\[\]]/g, '');
+    msg = 'X Post Ready:\n\n' + safe + '\n\nYES to post · NO to skip · or tell me what to change';
+  }
+  await telegramBot.sendMessage(joshuaChatId, msg);
 }
 
 // ── SCHEDULED POSTS ───────────────────────────────────────
