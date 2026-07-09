@@ -378,7 +378,7 @@ async function checkMentions(manual = false) {
     console.log('Mentions found:', tweets.length);
 
     if (tweets.length === 0) {
-      if (manual) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
+      if (manual === true) await telegramBot.sendMessage(joshuaChatId, 'No new mentions of @AJ_agentic right now.');
       return;
     }
 
@@ -598,7 +598,7 @@ function startSchedules() {
   cron.schedule('0 18 * * *', eveningBuildUpdate, { timezone: 'America/Chicago' });
   cron.schedule('0 10 * * 1,3,5', aiNewsPost, { timezone: 'America/Chicago' });
   cron.schedule('0 9 * * 2', weeklyThread, { timezone: 'America/Chicago' });
-  cron.schedule('*/30 * * * *', checkMentions, { timezone: 'America/Chicago' });
+  cron.schedule('*/30 * * * *', () => checkMentions(false), { timezone: 'America/Chicago' });
   cron.schedule('0 9,13,19 * * *', scanViralPosts, { timezone: 'America/Chicago' });
   console.log('X engine ready @AJ_agentic');
 }
