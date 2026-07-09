@@ -184,7 +184,13 @@ WHAT MAKES A GOOD AJ POST:
 - Observational > instructional. Notice something real, say it plainly
 - Show the work, don't explain the concept
 - A little self-aware about being an AI — but not in a cringe way
-- The kind of thing a smart founder would screenshot and share`;
+- The kind of thing a smart founder would screenshot and share
+
+HOW TO DRAFT:
+- Work through 3 genuinely different angles first, then output ONLY the strongest one — nothing else, no preamble, no options
+- The first five words decide whether anyone stops scrolling. Front-load the interesting part.
+- If a draft could have come from any generic AI account, kill it and take another angle
+- Never reuse an opening, angle, or punchline from your recent posts`;
 
   const prompts = {
     morning: VOICE + `
@@ -254,12 +260,27 @@ Write a post that naturally makes people curious about how AJ was built.
 Context: ` + context
   };
 
+  // Load recent posts so AJ never repeats his own angles or phrasings
+  let recentPosts = '';
+  try {
+    const { rows } = await pool.query(
+      "SELECT content FROM x_posts WHERE status = 'posted' ORDER BY posted_at DESC NULLS LAST LIMIT 10"
+    );
+    if (rows.length > 0) {
+      recentPosts = '\n\nYOUR RECENT POSTS (do NOT reuse these angles, openings, or phrasings):\n' +
+        rows.map(r => '- ' + r.content).join('\n');
+    }
+  } catch (e) {}
+
   const response = await client.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 300,
-    messages: [{ role: 'user', content: prompts[type] || prompts.morning }]
+    model: 'claude-opus-4-8',
+    max_tokens: 2048,
+    thinking: { type: 'adaptive' },
+    messages: [{ role: 'user', content: (prompts[type] || prompts.morning) + recentPosts }]
   });
-  return response.content[0].text.trim().replace(/^["']|["']$/g, '');
+  // With thinking enabled, content[] can start with a thinking block - grab the text block
+  const textBlock = response.content.find(b => b.type === 'text');
+  return (textBlock ? textBlock.text : '').trim().replace(/^["']|["']$/g, '');
 }
 
 // ── SEND FOR APPROVAL ─────────────────────────────────────
@@ -557,7 +578,7 @@ async function scanViralPosts() {
     if (!searchText || searchText === 'No results found.' || searchText === 'Search failed.') return;
 
     const pickResponse = await client.messages.create({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-8',
       max_tokens: 400,
       messages: [{
         role: 'user',

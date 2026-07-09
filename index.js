@@ -595,7 +595,7 @@ async function getAJResponse(chatId, userMessage) {
   history.push({ role: 'user', content: userMessage });
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-6',
+    model: 'claude-opus-4-8',
     max_tokens: 1024,
     system,
     messages: history
@@ -629,7 +629,7 @@ async function getAJResponse(chatId, userMessage) {
     try {
       // Use AI to determine if this is worth saving and extract a clean summary
       const saveCheck = await client.messages.create({
-        model: 'claude-opus-4-6',
+        model: 'claude-opus-4-8',
         max_tokens: 200,
         messages: [{
           role: 'user',
@@ -813,7 +813,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const message = parts.slice(1).join('|').trim();
       // Parse the time using AI
       const parseResp = await client.messages.create({
-        model: 'claude-opus-4-6',
+        model: 'claude-opus-4-8',
         max_tokens: 100,
         messages: [{ role: 'user', content: 'Current time in Fort Worth TX (America/Chicago): ' + new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }) + '\n\nConvert this to ISO 8601 datetime: "' + timeStr + '"\nReply with ONLY the ISO datetime string, nothing else. Example: 2025-04-14T09:30:00' }]
       });
@@ -1162,7 +1162,7 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
         // Step 1: Always silently analyze the image — extract text and description
         const silentAnalysis = await client.messages.create({
-          model: 'claude-opus-4-6',
+          model: 'claude-opus-4-8',
           max_tokens: 800,
           system: 'You are analyzing an image sent by Josh. Extract ALL text visible in the image verbatim. Then provide a brief description of what the image shows. Format your response as:\nTEXT: [all visible text, or "none" if no text]\nDESCRIPTION: [brief description of what the image shows]',
           messages: [{ role: 'user', content: [
@@ -1358,7 +1358,7 @@ app.post('/api/email-incoming', async (req, res) => {
     const emailPrompt = 'You just received an email to ' + account + '.\n\nFrom: ' + from + '\nSubject: ' + subject + '\nDate: ' + date + '\nPreview: ' + body + '\n\nAnalyze this email. Is it a lead, client reply, payment issue, spam, or general inquiry? Draft a short appropriate response if one is needed. If it is spam or a newsletter, just say IGNORE.';
 
     const response = await client.messages.create({
-      model: 'claude-opus-4-6',
+      model: 'claude-opus-4-8',
       max_tokens: 500,
       system: 'You are AJ, an AI business agent. Analyze incoming emails and draft responses in a professional but chill tone.',
       messages: [{ role: 'user', content: emailPrompt }]
