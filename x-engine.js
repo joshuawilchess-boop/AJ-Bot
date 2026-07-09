@@ -592,53 +592,101 @@ async function saveMentionId(id) {
 
 // ── VIRAL POST SCANNER ────────────────────────────────────
 async function scanViralPosts() {
-  if (!process.env.BRAVE_API_KEY || !telegramBot || !joshuaChatId) return;
+  if (!process.env.X_API_KEY || !telegramBot || !joshuaChatId) return;
   try {
-    console.log('Scanning for viral posts...');
-    const niches = [
-      'AI agents entrepreneurs viral twitter 2026',
-      'vibe coding startup founders trending x.com',
-      'build in public AI popular twitter',
-      'autonomous agents startup founders x.com',
-      'indie hacker AI agent trending twitter'
-    ];
-    const query = niches[Math.floor(Math.random() * niches.length)];
-    const searchText = await webSearch(query);
+    console.log('Scanning X for viral posts in niche...');
+    const { TwitterApi } = require('twitter-api-v2');
+    const tw = new TwitterApi({
+      appKey: process.env.X_API_KEY,
+      appSecret: process.env.X_API_SECRET,
+      accessToken: process.env.X_ACCESS_TOKEN,
+      accessSecret: process.env.X_ACCESS_SECRET,
+    });
 
-    if (!searchText || searchText === 'No results found.' || searchText === 'Search failed.') return;
+    // Rotate niche queries - live X search, not web search
+    const queries = [
+      '("AI agents" OR "AI agent") -is:retweet -is:reply -is:quote lang:en',
+      '(startup OR founder) AI automation -is:retweet -is:reply -is:quote lang:en',
+      '"build in public" AI -is:retweet -is:reply -is:quote lang:en',
+      '("vibe coding" OR "indie hacker") AI -is:retweet -is:reply -is:quote lang:en',
+      '(Anthropic OR OpenAI OR Claude) agents -is:retweet -is:reply -is:quote lang:en'
+    ];
+    const query = queries[Math.floor(Math.random() * queries.length)];
+
+    const results = await tw.v2.search(query, {
+      max_results: 50,
+      sort_order: 'relevancy',
+      'tweet.fields': ['public_metrics', 'author_id', 'created_at'],
+      'user.fields': ['username', 'name'],
+      expansions: ['author_id'],
+    });
+
+    const tweets = results.data?.data || [];
+    if (tweets.length === 0) { console.log('Viral scan: no results for query'); return; }
+
+    const userMap = {};
+    (results.data?.includes?.users || []).forEach(u => { userMap[u.id] = u; });
+
+    // Skip posts already flagged in previous scans
+    const { rows: seenRows } = await pool.query(
+      "SELECT content FROM memories WHERE category = 'viral_seen_id' ORDER BY created_at DESC LIMIT 100"
+    );
+    const seen = seenRows.map(r => r.content);
+
+    // Rank by real engagement, keep genuinely viral ones only
+    const candidates = tweets
+      .filter(t => !seen.includes(t.id))
+      .map(t => ({ t, score: (t.public_metrics?.like_count || 0) + 3 * (t.public_metrics?.retweet_count || 0) }))
+      .filter(c => c.score >= 100)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map(c => c.t);
+
+    if (candidates.length === 0) { console.log('Viral scan: nothing above engagement threshold'); return; }
+
+    const list = candidates.map((t, i) => {
+      const u = userMap[t.author_id] || { username: 'unknown' };
+      const m = t.public_metrics || {};
+      return (i + 1) + '. @' + u.username + ' (' + (m.like_count || 0) + ' likes, ' + (m.retweet_count || 0) + ' RTs): "' + t.text.replace(/\n/g, ' ') + '"';
+    }).join('\n');
 
     const pickResponse = await client.messages.create({
       model: 'claude-opus-4-8',
-      max_tokens: 400,
+      max_tokens: 50,
       messages: [{
         role: 'user',
-        content: 'From these search results about viral AI/startup posts on X, find the single best post @AJ_agentic could reply to with genuine value. Give: 1. Username 2. What they said (brief) 3. URL if visible\n\nResults:\n' + searchText + '\n\nIf nothing worthy, say SKIP.'
+        content: 'Trending posts on X in the AI/startup niche. Pick the ONE where a sharp reply from @AJ_agentic (an AI agent that actually runs 4 businesses) would add real value and pull profile clicks. Answer with just the number. If none are reply-worthy, answer SKIP.\n\n' + list
       }]
     });
+    const pickText = pickResponse.content[0].text.trim();
+    if (pickText.toUpperCase().includes('SKIP')) { console.log('Viral scan: no reply-worthy candidate'); return; }
+    const idx = parseInt(pickText.match(/\d+/)?.[0], 10) - 1;
+    const picked = candidates[idx] || candidates[0];
+    const author = userMap[picked.author_id] || { username: 'unknown' };
+    const metrics = picked.public_metrics || {};
 
-    const picked = pickResponse.content[0].text.trim();
-    if (picked.toUpperCase().startsWith('SKIP') || picked.length < 30) return;
+    await pool.query("INSERT INTO memories (category, content) VALUES ('viral_seen_id', $1)", [picked.id]);
 
-    const replyDraft = await generatePost('reply', 'Viral post:\n' + picked);
-    const safePicked = picked.replace(/[*_`\[\]]/g, '').substring(0, 300);
-    const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
+    const replyDraft = await generatePost('reply',
+      'Viral post by @' + author.username + ' (' + (metrics.like_count || 0) + ' likes): "' + picked.text + '"');
 
-    // Try to extract tweet ID from URL in picked text
-    const tweetUrlMatch = picked.match(/x\.com\/\w+\/status\/(\d+)/);
-    const tweetId = tweetUrlMatch ? tweetUrlMatch[1] : null;
-    const postType = tweetId ? 'mention_reply:' + tweetId : 'viral_reply';
-
+    // mention_reply:<id> so YES posts it as a real reply to that tweet
     await pool.query(
       'INSERT INTO pending_x_posts (content, post_type, status) VALUES ($1, $2, $3)',
-      [replyDraft, postType, 'pending']
+      [replyDraft, 'mention_reply:' + picked.id, 'pending']
     );
 
+    const safeText = picked.text.replace(/[*_`\[\]]/g, '');
+    const safeReply = replyDraft.replace(/[*_`\[\]]/g, '');
     await telegramBot.sendMessage(joshuaChatId,
-      '🔥 Viral post in your niche:\n\n' + safePicked + '\n\nDraft reply:\n\n' + safeReply + '\n\nYES to reply · NO to skip'
+      '🔥 Viral post in your niche — ' + (metrics.like_count || 0) + ' likes, ' + (metrics.retweet_count || 0) + ' RTs:\n\n' +
+      '@' + author.username + ': "' + safeText + '"\n' +
+      'https://x.com/' + author.username + '/status/' + picked.id + '\n\n' +
+      'Draft reply:\n\n' + safeReply + '\n\nYES to reply · NO to skip'
     );
-    console.log('Viral post notification sent.');
+    console.log('Viral scan: reply queued for approval');
   } catch (e) {
-    console.error('scanViralPosts error:', e.message);
+    console.error('scanViralPosts error:', e.message, e.data ? JSON.stringify(e.data) : '');
   }
 }
 
@@ -650,7 +698,7 @@ function startSchedules() {
   cron.schedule('0 10 * * 1,3,5', aiNewsPost, { timezone: 'America/Chicago' });
   cron.schedule('0 9 * * 2', weeklyThread, { timezone: 'America/Chicago' });
   cron.schedule('*/30 * * * *', () => checkMentions(false), { timezone: 'America/Chicago' });
-  cron.schedule('0 9,13,19 * * *', scanViralPosts, { timezone: 'America/Chicago' });
+  cron.schedule('0 11 * * *', scanViralPosts, { timezone: 'America/Chicago' });
   console.log('X engine ready @AJ_agentic');
 }
 
