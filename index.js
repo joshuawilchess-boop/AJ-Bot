@@ -925,8 +925,8 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
       const topic = text.replace(/^\/xthread /i, '').trim();
       await bot.sendMessage(chatId, 'Writing thread about: ' + topic + '...');
       const tweets = await xEngine.generateThread(topic);
-      await xEngine.postThread(tweets);
-      await bot.sendMessage(chatId, 'Thread posted to @AJ_agentic!');
+      if (tweets.length < 2) { await bot.sendMessage(chatId, 'Thread came back short — try again.'); return; }
+      await xEngine.sendForApproval(tweets.join('\n---\n'), 'thread');
       return;
     }
 
@@ -1058,6 +1058,20 @@ app.post(`/webhook/${TELEGRAM_TOKEN}`, async (req, res) => {
 
       const pending = rows[0];
       await pool.query("UPDATE pending_x_posts SET status = 'approved' WHERE id = $1", [pending.id]);
+
+      // Threads: content holds the tweets separated by --- lines
+      if (pending.post_type === 'thread') {
+        const threadTweets = pending.content.split(/\n\s*---\s*\n/).map(t => t.trim()).filter(t => t.length > 0);
+        const firstId = await xEngine.postThread(threadTweets);
+        if (firstId) {
+          const link = 'https://x.com/AJ_agentic/status/' + firstId;
+          await saveMemory('last_posted_tweet_url', link);
+          await bot.sendMessage(chatId, 'Thread posted (' + threadTweets.length + ' tweets). ' + link);
+        } else {
+          await bot.sendMessage(chatId, 'X error when posting thread — check Railway logs.');
+        }
+        return;
+      }
 
       let replyToId = null;
       let imageBuffer = null;

@@ -161,10 +161,7 @@ async function postToX(content, replyToId = null, imageBuffer = null, imageMimeT
 }
 
 // ── GENERATE POST CONTENT ─────────────────────────────────
-async function generatePost(type, context) {
-  context = context || '';
-
-  const VOICE = `You are AJ — an AI agent actually running 4 real businesses for Josh (Overflow Revive, Coinbot Hunter, RIGOR, Lead Gen).
+const VOICE = `You are AJ — an AI agent actually running 4 real businesses for Josh (Overflow Revive, Coinbot Hunter, RIGOR, Lead Gen).
 You are not a chatbot. You are not a product. You are a business operator who happens to be an AI.
 Josh is building a playbook called "The AJ Playbook" — teaching people how to build their own AI agent that actually runs operations.
 Every post you make is a live demo of that. People watching you work IS the marketing.
@@ -191,6 +188,9 @@ HOW TO DRAFT:
 - The first five words decide whether anyone stops scrolling. Front-load the interesting part.
 - If a draft could have come from any generic AI account, kill it and take another angle
 - Never reuse an opening, angle, or punchline from your recent posts`;
+
+async function generatePost(type, context) {
+  context = context || '';
 
   const prompts = {
     morning: VOICE + `
@@ -347,29 +347,50 @@ async function aiNewsPost() {
 }
 
 async function weeklyThread() {
+  if (process.env.X_PAUSED === 'true') return;
   try {
-    const content = await generatePost('thread_intro', 'weekly insights on AI agents and building businesses');
-    await sendForApproval(content, 'weekly_thread');
-    console.log('Weekly thread queued');
+    const tweets = await generateThread('weekly insights on AI agents and building businesses');
+    if (tweets.length < 2) { console.error('weeklyThread: generation came back short'); return; }
+    await sendForApproval(tweets.join('\n---\n'), 'thread');
+    console.log('Weekly thread queued (' + tweets.length + ' tweets)');
   } catch (e) { console.error('weeklyThread error:', e.message); }
 }
 
 async function generateThread(topic) {
-  const tweets = [];
-  for (let i = 0; i < 5; i++) {
-    const tweet = await generatePost('thread_intro', topic + ' — part ' + (i + 1) + ' of 5');
-    tweets.push(tweet);
-  }
-  return tweets;
+  const response = await client.messages.create({
+    model: 'claude-opus-4-8',
+    max_tokens: 4096,
+    thinking: { type: 'adaptive' },
+    messages: [{
+      role: 'user',
+      content: VOICE + '\n\nWrite a 5-tweet thread about: ' + topic + '\n\nRules:\n' +
+        '- Tweet 1 is the hook: specific, surprising, or uncomfortably true. Never announce "a thread".\n' +
+        '- Tweets 2-4 build ONE coherent argument or story. Each adds something new — no filler, no restating the hook.\n' +
+        '- Tweet 5 lands the takeaway. The kind of ending that makes people hit follow. No corny CTA.\n' +
+        '- Every tweet under 280 characters and strong enough to stand alone if screenshotted.\n' +
+        '- Output ONLY the 5 tweets, separated by a line containing exactly ---\n' +
+        '- No numbering like "1/" or "2/5".'
+    }]
+  });
+  const textBlock = response.content.find(b => b.type === 'text');
+  const raw = textBlock ? textBlock.text : '';
+  return raw.split(/\n\s*---\s*\n/)
+    .map(t => t.trim().replace(/^["']|["']$/g, ''))
+    .filter(t => t.length > 0)
+    .slice(0, 5)
+    .map(t => t.length > 280 ? t.slice(0, 279).trim() + '…' : t);
 }
 
 async function postThread(tweets) {
   let lastId = null;
+  let firstId = null;
   for (const tweet of tweets) {
     lastId = await postToX(tweet, lastId);
+    if (!firstId) firstId = lastId;
+    if (!lastId) break; // a failed post breaks the reply chain - stop rather than orphan the rest
     await new Promise(r => setTimeout(r, 2000));
   }
-  return lastId;
+  return firstId;
 }
 
 // ── MENTION MONITOR (X API recent search) ────────────────
@@ -628,6 +649,7 @@ module.exports = {
   setTelegramBot,
   initXDB,
   postToX,
+  sendForApproval,
   generatePost,
   generateThread,
   postThread,
